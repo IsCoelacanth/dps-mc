@@ -5,14 +5,14 @@ import yaml
 
 import torch
 import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
+import numpy as np
+
 
 from guided_diffusion.condition_methods import get_conditioning_method
 from guided_diffusion.measurements import get_noise, get_operator
 from guided_diffusion.unet import create_model
 from guided_diffusion.gaussian_diffusion import create_sampler
 from data.dataloader import get_dataset, get_dataloader
-from util.img_utils import clear_color, mask_generator
 from util.logger import get_logger
 
 
@@ -31,6 +31,11 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./results')
     args = parser.parse_args()
    
+    # set all the seeds for repo
+    torch.manual_seed(42)
+    np.random.seed(42)
+
+
     # logger
     logger = get_logger()
     
@@ -66,7 +71,7 @@ def main():
    
     # Load diffusion sampler
     sampler = create_sampler(**diffusion_config) 
-    sample_fn = partial(sampler.p_sample_loop, model=model, measurement_cond_fn=measurement_cond_fn)
+    sample_fn = partial(sampler.p_sample_loop, model=model, measurement_cond_fn=measurement_cond_fn, operator=operator)
    
     # Working directory
     out_path = os.path.join(args.save_dir, measure_config['operator']['name'])
@@ -76,46 +81,33 @@ def main():
 
     # Prepare dataloader
     data_config = task_config['data']
-    transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    dataset = get_dataset(**data_config, transforms=transform)
+    dataset = get_dataset(**data_config)
     loader = get_dataloader(dataset, batch_size=1, num_workers=0, train=False)
 
-    # Exception) In case of inpainting, we need to generate a mask 
-    if measure_config['operator']['name'] == 'inpainting':
-        mask_gen = mask_generator(
-           **measure_config['mask_opt']
-        )
         
     # Do Inference
-    for i, ref_img in enumerate(loader):
+    for i, (ref_img, file_name, gt, inputs, kspace) in enumerate(loader):
         logger.info(f"Inference for image {i}")
-        fname = str(i).zfill(5) + '.png'
         ref_img = ref_img.to(device)
+       
+        y = operator.forward(ref_img)
+        y_n = noiser(y)
 
-        # Exception) In case of inpainging,
-        if measure_config['operator'] ['name'] == 'inpainting':
-            mask = mask_gen(ref_img)
-            mask = mask[:, 0, :, :].unsqueeze(dim=0)
-            measurement_cond_fn = partial(cond_method.conditioning, mask=mask)
-            sample_fn = partial(sample_fn, measurement_cond_fn=measurement_cond_fn)
-
-            # Forward measurement model (Ax + n)
-            y = operator.forward(ref_img, mask=mask)
-            y_n = noiser(y)
-
-        else: 
-            # Forward measurement model (Ax + n)
-            y = operator.forward(ref_img)
-            y_n = noiser(y)
+        # start recon from the UC data samples
+        x_start = ref_img.clone().detach().requires_grad_()
          
         # Sampling
         x_start = torch.randn(ref_img.shape, device=device).requires_grad_()
         sample = sample_fn(x_start=x_start, measurement=y_n, record=True, save_root=out_path)
 
-        plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-        plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-        plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
+        for i, fn in enumerate(file_name):
+            result = {
+                    'undersampled_input': inputs[i].detach().cpu().numpy(),
+                    'ground_truth': gt[i].detach().cpu().numpy(),
+                    'recon': sample[i].detach().cpu().numpy(),
+                    'kspace': kspace[i].detach().cpu().numpy(),
+                    }
+            np.save(os.path.join(out_path, fn), result, allow_pickle=True) # type: ignore
 
 if __name__ == '__main__':
     main()
