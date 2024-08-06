@@ -129,7 +129,7 @@ class ReconDataset(Dataset):
     def __init__(self, root: str, mask_path: str, us_mask_type: str, single_file_eval: bool = False) -> None:
         super().__init__()
         print(f"Loading Dataset from: {root} and masks from {mask_path}")
-        if single_file_eval:
+        if not single_file_eval:
             self.files = glob(root + '/**/*.mat', recursive=True)
             self.files = sorted(self.files, key=lambda x: int(x.split('/')[-2][1:]))
         else:
@@ -200,7 +200,12 @@ class ReconDataset(Dataset):
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
         out = interpolate(out.unsqueeze(0), (256, 512), mode='nearest-exact').squeeze()
         
-        return (out, self.files, fused, out, np.stack([current_kspace[f0], current_kspace[f1], current_kspace[f2]]), masks)
+        image_space_output = np.stack([fused[f0], fused[f1], fused[f2]])
+        kspace_output = np.stack([current_kspace[f0], current_kspace[f1], current_kspace[f2]])
+        csm_output = np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]])
+
+
+        return (out, (slice, f0), image_space_output, csm_output, kspace_output, masks)
 
 @register_dataset(name='ffhq')
 class FFHQDataset(VisionDataset):
@@ -232,4 +237,29 @@ if __name__ == "__main__":
     
     print("Len:", len(dataset))
 
-    a, b, c, d, e, f = dataset[0]
+    a, b, c, d, e, f = dataset[42]
+    print("\nBatch ->")
+    print(type(a))
+    print(a.shape, a.min(), a.max(), a.mean(), a.std())
+
+    print(b)
+
+    # Complex Valued fused image space
+    print("\nFused Image Space [complex valued image]")
+    print(type(c))
+    print(c.shape)
+
+    # Coil Sense Maps
+    print("\nCoil Sense Maps [est]")
+    print(type(d))
+    print(d.shape)
+
+    # Kspace 
+    print("\nKspace")
+    print(type(e))
+    print(e.shape)
+
+    # Masks
+    print("\nMasks")
+    print(type(f))
+    print(f.shape)
