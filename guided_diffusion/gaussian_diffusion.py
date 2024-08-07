@@ -325,13 +325,13 @@ class SpacedDiffusion(GaussianDiffusion):
     def training_losses(
         self, model, *args, **kwargs
     ):  # pylint: disable=signature-differs
-        return super().training_losses(self._wrap_model(model), *args, **kwargs)
+        return super().training_losses(self._wrap_model(model), *args, **kwargs) # type: ignore
 
     def condition_mean(self, cond_fn, *args, **kwargs):
-        return super().condition_mean(self._wrap_model(cond_fn), *args, **kwargs)
+        return super().condition_mean(self._wrap_model(cond_fn), *args, **kwargs) # type: ignore
 
     def condition_score(self, cond_fn, *args, **kwargs):
-        return super().condition_score(self._wrap_model(cond_fn), *args, **kwargs)
+        return super().condition_score(self._wrap_model(cond_fn), *args, **kwargs) # type: ignore
 
     def _wrap_model(self, model):
         if isinstance(model, _WrappedModel):
@@ -470,7 +470,7 @@ def extract_and_expand(array, time, target):
 def expand_as(array, target):
     if isinstance(array, np.ndarray):
         array = torch.from_numpy(array)
-    elif isinstance(array, np.float):
+    elif isinstance(array, float):
         array = torch.tensor([array])
    
     while array.ndim < target.ndim:
@@ -479,7 +479,7 @@ def expand_as(array, target):
     return array.expand_as(target).to(target.device)
 
 
-def _extract_into_tensor(arr, timesteps, broadcast_shape):
+def _extract_into_tensor(arr, timesteps, broadcast_shape): # type: ignore
     """
     Extract values from a 1-D numpy array for a batch of indices.
 

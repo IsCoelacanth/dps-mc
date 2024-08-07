@@ -18,7 +18,7 @@ def get_conditioning_method(name: str, operator, noiser, **kwargs):
 
     
 class ConditioningMethod(ABC):
-    def __init__(self, operator, noiser, **kwargs):
+    def __init__(self, operator, noiser):
         self.operator = operator
         self.noiser = noiser
     
@@ -50,12 +50,12 @@ class ConditioningMethod(ABC):
 @register_conditioning_method(name='vanilla')
 class Identity(ConditioningMethod):
     # just pass the input without conditioning
-    def conditioning(self, x_t):
+    def conditioning(self, x_t): # type: ignore
         return x_t
     
 @register_conditioning_method(name='projection')
 class Projection(ConditioningMethod):
-    def conditioning(self, x_t, noisy_measurement, **kwargs):
+    def conditioning(self, x_t, noisy_measurement): # type: ignore
         x_t = self.project(data=x_t, noisy_measurement=noisy_measurement)
         return x_t
 
@@ -66,7 +66,7 @@ class ManifoldConstraintGradient(ConditioningMethod):
         super().__init__(operator, noiser)
         self.scale = kwargs.get('scale', 1.0)
         
-    def conditioning(self, x_prev, x_t, x_0_hat, measurement, noisy_measurement, **kwargs):
+    def conditioning(self, x_prev, x_t, x_0_hat, measurement, noisy_measurement, **kwargs): # type: ignore
         # posterior sampling
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
         x_t -= norm_grad * self.scale
@@ -81,7 +81,7 @@ class PosteriorSampling(ConditioningMethod):
         super().__init__(operator, noiser)
         self.scale = kwargs.get('scale', 1.0)
 
-    def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs):
+    def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs): # type: ignore
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
         x_t -= norm_grad * self.scale
         return x_t, norm
@@ -93,7 +93,7 @@ class PosteriorSamplingPlus(ConditioningMethod):
         self.num_sampling = kwargs.get('num_sampling', 5)
         self.scale = kwargs.get('scale', 1.0)
 
-    def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs):
+    def conditioning(self, x_prev, x_t, x_0_hat, measurement): # type: ignore
         norm = 0
         for _ in range(self.num_sampling):
             # TODO: use noiser?
@@ -101,6 +101,6 @@ class PosteriorSamplingPlus(ConditioningMethod):
             difference = measurement - self.operator.forward(x_0_hat_noise)
             norm += torch.linalg.norm(difference) / self.num_sampling
         
-        norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
+        norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]  # type: ignore
         x_t -= norm_grad * self.scale
         return x_t, norm
