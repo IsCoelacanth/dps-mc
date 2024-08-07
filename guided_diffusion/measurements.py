@@ -5,10 +5,6 @@ from typing import List
 from torch.nn import functional as F
 from torchvision import torch
 
-# from motionblur.motionblur import Kernel
-from util.fastmri_utils import ifft2c_new, fft2c_new
-
-
 from torch import fft as tfft
 
 def fft(x: torch.Tensor) -> torch.Tensor:
@@ -47,12 +43,12 @@ def get_operator(name: str, **kwargs):
 
 class LinearOperator(ABC):
     @abstractmethod
-    def forward(self, data, **kwargs):
+    def forward(self, data, **kwargs) -> torch.Tensor:
         # calculate A * X
         pass
 
     @abstractmethod
-    def transpose(self, data, **kwargs):
+    def transpose(self, data, **kwargs) -> torch.Tensor:
         # calculate A^T * X
         pass
 
@@ -110,6 +106,16 @@ class ReconOperatorSingle(LinearOperator):
         
         image_space = ifft(kspace_image)
         image_space = torch.sum(image_space * csm.unsqueeze(0).conj(), dim=2)
+        f0 = image_space[:, 0]
+        f1 = image_space[:, 1]
+        f2 = image_space[:, 2]
+        image_space = torch.stack([
+            f0.real, f0.imag,
+            f1.real, f1.imag,
+            f2.real, f2.imag
+        ],
+        dim=1
+        )
         image_space = F.interpolate(image_space, tuple(dest_size), mode='nearest-exact')
         return image_space
 

@@ -255,7 +255,7 @@ if __name__ == "__main__":
     mask_path = "/bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Aorta/TrainingSet/Mask_Task2/P002/"
     mask_type = "ktRadial4"
     # mask_type = "ktGaussian24"
-    mask_type = "ktUniform24"
+    # mask_type = "ktUniform24"
     sfe = True
 
     dataset = ReconDataset(
@@ -292,14 +292,14 @@ if __name__ == "__main__":
     print(type(f))
     print(f.shape)
 
-    y = opp.A(a.unsqueeze(0), torch.from_numpy(f), torch.from_numpy(d)).numpy()
+    y = opp.A(a.unsqueeze(0), torch.from_numpy(f), torch.from_numpy(d))
 
-    z = opp.At(y, torch.from_numpy(d), (a.shape[-2, -1]))
+    z = opp.At(y, torch.from_numpy(d), a.shape[-2: ])
 
     np.save("input.npy", a.numpy())
     np.save("kspace.npy", e)
     np.save("mask.npy", f)
     np.save("csm.npy", d)
-    np.save("output.npy", y)
+    np.save("output.npy", y.numpy())
     np.save("inverse.npy", z.numpy())
 
