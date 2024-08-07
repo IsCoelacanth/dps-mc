@@ -1,6 +1,7 @@
 """This module handles task-dependent operations (A) and noises (n) to simulate a measurement y=Ax+n."""
 
 from abc import ABC, abstractmethod
+from typing import List
 from torch.nn import functional as F
 from torchvision import torch
 
@@ -86,7 +87,6 @@ class ReconOperatorSingle(LinearOperator):
         nf, th, tw = mask.shape
         image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
         # [b, 6, th, tw]
-        b = image_space.shape[0]
         f0 = image_space[:, 0:2]
         f1 = image_space[:, 2:4]
         f2 = image_space[:, 4:6]
@@ -94,17 +94,24 @@ class ReconOperatorSingle(LinearOperator):
             torch.stack([f0, f1, f2], dim=1).permute(0, 1, 3, 4, 2).contiguous()
         )
         image_space = torch.view_as_complex(image_space)
-        # print("RESIZE AND STACK:", image_space.shape)
         assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
-        # print("IMAGE:", image_space.shape, "CSM:", csms.shape)
         image_senes = csms.unsqueeze(0) * image_space.unsqueeze(2)
-        # print("CSM APPLIED:", image_senes.shape)
         kspace_image = fft(image_senes)
-        # print("KSPACE:", kspace_image.shape)
         mask = mask.unsqueeze(1).repeat(1,10,1,1)
         kspace_image = kspace_image * mask
-        # print(kspace_image.shape)
         return kspace_image
+
+    def At(self, kspace_image: torch.Tensor, csm: torch.Tensor, dest_size: List[int]) -> torch.Tensor:
+        """
+        kspace_image: [b, frames, coils, th, tw] -> K-space data
+        csms: [3, 10, ch, cw] -> One sense map per frame, 10 total
+        dest_size: [int, int] -> resize image target
+        """
+        
+        image_space = ifft(kspace_image)
+        image_space = torch.sum(image_space * csm.unsqueeze(0).conj(), dim=2)
+        image_space = F.interpolate(image_space, tuple(dest_size), mode='nearest-exact')
+        return image_space
 
 
 # =============
