@@ -171,6 +171,7 @@ class ReconDataset(Dataset):
         current_kspace = self.kdata[:, slice]
 
         image_space = torch.from_numpy(current_kspace)
+        image_space = ifft(image_space)
         sense_maps = estimate_sensitivity_maps_smooth(image_space)
         fused = torch.sum(image_space * sense_maps.conj(), dim=1).numpy()
 
@@ -228,13 +229,17 @@ class FFHQDataset(VisionDataset):
 
 
 if __name__ == "__main__":
+    from guided_diffusion.measurements import ReconOperatorSingle
     root = "/bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Aorta/TrainingSet/FullSample/P002/aorta_sag.mat"
     mask_path = "/bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Aorta/TrainingSet/Mask_Task2/P002/"
-    mask_type = "ktRadial4"
+    mask_type = "ktRadial4" 
+    # mask_type = "ktGaussian24"
+    mask_type = "ktUniform24"
     sfe = True
 
     dataset = ReconDataset(root=root, mask_path=mask_path, us_mask_type=mask_type, single_file_eval=sfe)
-    
+    opp = ReconOperatorSingle()
+
     print("Len:", len(dataset))
 
     a, b, c, d, e, f = dataset[42]
@@ -263,3 +268,11 @@ if __name__ == "__main__":
     print("\nMasks")
     print(type(f))
     print(f.shape)
+
+    y = opp.A(a.unsqueeze(0), torch.from_numpy(f), torch.from_numpy(d)).numpy()
+
+    np.save('input.npy', a.numpy())
+    np.save('kspace.npy', e) 
+    np.save('mask.npy', f)
+    np.save('csm.npy', d)
+    np.save('output.npy', y)

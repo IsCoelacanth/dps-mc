@@ -1,17 +1,32 @@
-'''This module handles task-dependent operations (A) and noises (n) to simulate a measurement y=Ax+n.'''
+"""This module handles task-dependent operations (A) and noises (n) to simulate a measurement y=Ax+n."""
 
 from abc import ABC, abstractmethod
 from torch.nn import functional as F
 from torchvision import torch
+
 # from motionblur.motionblur import Kernel
 from util.fastmri_utils import ifft2c_new, fft2c_new
 
 
+from torch import fft as tfft
+
+def fft(x: torch.Tensor) -> torch.Tensor:
+    x = tfft.ifftshift(x)
+    x = tfft.fft2(x, norm='ortho')
+    x = tfft.fftshift(x)
+    return x
+
+def ifft(x: torch.Tensor) -> torch.Tensor:
+    x = tfft.fftshift(x)
+    x = tfft.ifft2(x, norm='ortho')
+    x = tfft.ifftshift(x)
+    return x
 # =================
 # Operation classes
 # =================
 
 __OPERATOR__ = {}
+
 
 def register_operator(name: str):
     def wrapper(cls):
@@ -19,6 +34,7 @@ def register_operator(name: str):
             raise NameError(f"Name {name} is already registered!")
         __OPERATOR__[name] = cls
         return cls
+
     return wrapper
 
 
@@ -38,7 +54,7 @@ class LinearOperator(ABC):
     def transpose(self, data, **kwargs):
         # calculate A^T * X
         pass
-    
+
     def ortho_project(self, data, **kwargs):
         # calculate (I - A^T * A)X
         return data - self.transpose(self.forward(data, **kwargs), **kwargs)
@@ -47,32 +63,49 @@ class LinearOperator(ABC):
         # calculate (I - A^T * A)Y - AX
         return self.ortho_project(measurement, **kwargs) - self.forward(data, **kwargs)
 
+
 class ReconOperatorSingle(LinearOperator):
     def __init__(self) -> None:
         super().__init__()
 
-    def A(self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor) -> torch.Tensor:
+    def forward(self, data, **kwargs):
+        pass
+
+    def transpose(self, data, **kwargs):
+        pass
+
+    def A(
+        self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor
+    ) -> torch.Tensor:
         """
-        image_spage: [b, 6, bh, hw] -> Image space data 
+        image_spage: [b, 6, bh, hw] -> Image space data
                      6 = [r0, i0, r1, i1, r2, i2]
         mask       : [3, th, tw] -> 3 Frames, target H, target W
         csm        : [3, 10, ch, cw] -> One sense map per frame, 10 senses total
         """
         nf, th, tw = mask.shape
-        image_space = F.interpolate(image_space, size=(th, tw), mode='nearest-exac')
+        image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
         # [b, 6, th, tw]
+        b = image_space.shape[0]
         f0 = image_space[:, 0:2]
         f1 = image_space[:, 2:4]
         f2 = image_space[:, 4:6]
-        image_space = torch.stack([f0, f1, f2], dim=1).permute(0,1,3,4,2).contiguous()
-        print(image_space.shape)
+        image_space = (
+            torch.stack([f0, f1, f2], dim=1).permute(0, 1, 3, 4, 2).contiguous()
+        )
+        image_space = torch.view_as_complex(image_space)
+        # print("RESIZE AND STACK:", image_space.shape)
         assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
-        image_senes = image_space * csms
-        print(image_senes.shape)
-        kspace_image = fft2c_new(image_senes)
+        # print("IMAGE:", image_space.shape, "CSM:", csms.shape)
+        image_senes = csms.unsqueeze(0) * image_space.unsqueeze(2)
+        # print("CSM APPLIED:", image_senes.shape)
+        kspace_image = fft(image_senes)
+        # print("KSPACE:", kspace_image.shape)
+        mask = mask.unsqueeze(1).repeat(1,10,1,1)
         kspace_image = kspace_image * mask
-        print(kspace_image.shape)
-        return kspace_image 
+        # print(kspace_image.shape)
+        return kspace_image
+
 
 # =============
 # Noise classes
@@ -81,13 +114,16 @@ class ReconOperatorSingle(LinearOperator):
 
 __NOISE__ = {}
 
+
 def register_noise(name: str):
     def wrapper(cls):
         if __NOISE__.get(name, None):
             raise NameError(f"Name {name} is already defined!")
         __NOISE__[name] = cls
         return cls
+
     return wrapper
+
 
 def get_noise(name: str, **kwargs):
     if __NOISE__.get(name, None) is None:
@@ -96,47 +132,53 @@ def get_noise(name: str, **kwargs):
     noiser.__name__ = name
     return noiser
 
+
 class Noise(ABC):
     def __call__(self, data):
         return self.forward(data)
-    
+
     @abstractmethod
     def forward(self, data):
         pass
 
-@register_noise(name='clean')
+
+@register_noise(name="clean")
 class Clean(Noise):
     def forward(self, data):
         return data
 
-@register_noise(name='gaussian')
+
+@register_noise(name="gaussian")
 class GaussianNoise(Noise):
     def __init__(self, sigma):
         self.sigma = sigma
-    
+
     def forward(self, data):
         return data + torch.randn_like(data, device=data.device) * self.sigma
 
 
-@register_noise(name='poisson')
+@register_noise(name="poisson")
 class PoissonNoise(Noise):
     def __init__(self, rate):
         self.rate = rate
 
-    def forward(self, data): # type: ignore
-        '''
+    def forward(self, data):  # type: ignore
+        """
         Follow skimage.util.random_noise.
-        '''
+        """
 
         # TODO: set one version of poisson
-       
+
         # version 3 (stack-overflow)
         import numpy as np
+
         data = (data + 1.0) / 2.0
         data = data.clamp(0, 1)
         device = data.device
         data = data.detach().cpu()
-        data = torch.from_numpy(np.random.poisson(data * 255.0 * self.rate) / 255.0 / self.rate)
+        data = torch.from_numpy(
+            np.random.poisson(data * 255.0 * self.rate) / 255.0 / self.rate
+        )
         data = data * 2.0 - 1.0
         data = data.clamp(-1, 1)
         return data.to(device)
@@ -147,7 +189,6 @@ class PoissonNoise(Noise):
         # else:
         #     low_clip = 0
 
-    
         # # Determine unique values in iamge & calculate the next power of two
         # vals = torch.Tensor([len(torch.unique(data))])
         # vals = 2 ** torch.ceil(torch.log2(vals))
@@ -161,5 +202,5 @@ class PoissonNoise(Noise):
 
         # if low_clip == -1:
         #     data = data * (old_max + 1.0) - 1.0
-       
+
         # return data.clamp(low_clip, 1.0)
