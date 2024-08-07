@@ -31,7 +31,7 @@ def get_dataset(name: str, root: str, **kwargs):
 
 
 def get_dataloader(
-    dataset: VisionDataset, batch_size: int, num_workers: int, train: bool
+    dataset: Dataset, batch_size: int, num_workers: int, train: bool
 ):
     dataloader = DataLoader(
         dataset, batch_size, shuffle=train, num_workers=num_workers, drop_last=train
@@ -170,7 +170,10 @@ class ReconDataset(Dataset):
             self.kdata = kspace_data
             self.mask = mask_data
             self.total_frames = kspace_data.shape[0]
-            for i in range(kspace_data.shape[1]):
+            ns = kspace_data.shape[1]
+            ns1 = ns//2 - 1
+            ns2 = ns//2 
+            for i in [ns1, ns2]: 
                 for j in range(kspace_data.shape[0]):
                     dataset.append([j, i])
             self.dataset = dataset
@@ -210,7 +213,7 @@ class ReconDataset(Dataset):
         real2 = np.real(frame2)
         imag2 = np.imag(frame2)
 
-        masks = np.stack([self.mask[f0], self.mask[f1], self.mask[f2]])
+        masks = torch.from_numpy(np.stack([self.mask[f0], self.mask[f1], self.mask[f2]]))
 
         out = np.stack([real0, imag0, real1, imag1, real2, imag2]).astype(np.float32)
         out = torch.from_numpy(out)
@@ -219,15 +222,18 @@ class ReconDataset(Dataset):
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
         out = interpolate(out.unsqueeze(0), (256, 512), mode="nearest-exact").squeeze()
 
-        image_space_output = np.stack([fused[f0], fused[f1], fused[f2]])
-        kspace_output = np.stack([
+        kspace_output = torch.from_numpy(np.stack([
             current_kspace[f0],
             current_kspace[f1],
             current_kspace[f2],
         ])
-        csm_output = np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]])
+                                         )
+        csm_output = torch.from_numpy(np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]]))
 
-        return (out, (slice, f0), image_space_output, csm_output, kspace_output, masks)
+        guidance = {'slice_no': slice, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks}
+
+        return out, guidance
+
 
 
 @register_dataset(name="ffhq")
@@ -265,29 +271,28 @@ if __name__ == "__main__":
 
     print("Len:", len(dataset))
 
-    a, b, c, d, e, f = dataset[42]
+    a, guide = dataset[42]
+
     print("\nBatch ->")
     print(type(a))
     print(a.shape, a.min(), a.max(), a.mean(), a.std())
 
-    print(b)
-
-    # Complex Valued fused image space
-    print("\nFused Image Space [complex valued image]")
-    print(type(c))
-    print(c.shape)
+    print(guide['slice_no'], guide['frame_no'])
 
     # Coil Sense Maps
+    d = guide['sense_maps']
     print("\nCoil Sense Maps [est]")
     print(type(d))
     print(d.shape)
 
     # Kspace
+    e = guide['kspace']
     print("\nKspace")
     print(type(e))
     print(e.shape)
 
     # Masks
+    f = guide['mask']
     print("\nMasks")
     print(type(f))
     print(f.shape)
@@ -302,4 +307,10 @@ if __name__ == "__main__":
     np.save("csm.npy", d)
     np.save("output.npy", y.numpy())
     np.save("inverse.npy", z.numpy())
+
+    dataloader = get_dataloader(dataset, batch_size=2, train=False, num_workers=1)
+
+    for a, b in dataloader:
+        print(a.shape)
+        print(b)
 

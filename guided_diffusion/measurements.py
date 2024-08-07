@@ -66,10 +66,10 @@ class ReconOperatorSingle(LinearOperator):
         super().__init__()
 
     def forward(self, data, **kwargs):
-        pass
+        return self.A(data, kwargs['mask'], kwargs['sense_maps'])
 
     def transpose(self, data, **kwargs):
-        pass
+        return self.At(data, kwargs['sense_maps'], kwargs['size'])
 
     def A(
         self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor

@@ -173,7 +173,9 @@ class GaussianDiffusion:
                       measurement,
                       measurement_cond_fn,
                       record,
-                      save_root):
+                      save_root,
+                      operator,
+                      ):
         """
         The function used for sampling from noise.
         """ 
@@ -185,7 +187,7 @@ class GaussianDiffusion:
             time = torch.tensor([idx] * img.shape[0], device=device)
             
             img = img.requires_grad_()
-            out = self.p_sample(x=img, t=time, model=model)
+            out = self.p_sample(x=img, t=time, model=model, operator=operator)
             
             # Give condition.
             noisy_measurement = self.q_sample(measurement, t=time)
@@ -206,7 +208,7 @@ class GaussianDiffusion:
 
         return img       
         
-    def p_sample(self, model, x, t):
+    def p_sample(self, model, x, t, o):
         raise NotImplementedError
 
     def p_mean_variance(self, model, x, t):
@@ -362,7 +364,7 @@ class _WrappedModel:
 
 @register_sampler(name='ddpm')
 class DDPM(SpacedDiffusion):
-    def p_sample(self, model, x, t):
+    def p_sample(self, model, x, t, o):
         out = self.p_mean_variance(model, x, t)
         sample = out['mean']
 
@@ -375,7 +377,7 @@ class DDPM(SpacedDiffusion):
 
 @register_sampler(name='ddim')
 class DDIM(SpacedDiffusion):
-    def p_sample(self, model, x, t, eta=0.0):
+    def p_sample(self, model, x, t, o, eta=0.0):
         out = self.p_mean_variance(model, x, t)
         
         eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
@@ -387,6 +389,10 @@ class DDIM(SpacedDiffusion):
             * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
             * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
+
+        x_0_pred = out['pred_xstart']
+        x_0_pred = x_0_pred - o.At(o.A(x_0_pred, _, _, _) - y, _, _)
+
         # Equation 12.
         noise = torch.randn_like(x)
         mean_pred = (

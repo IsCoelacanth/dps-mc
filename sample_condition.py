@@ -85,7 +85,7 @@ def main():
 
         
     # Do Inference
-    for i, (ref_img, file_name, gt, inputs, kspace) in enumerate(loader):
+    for i, (ref_img, guide) in enumerate(loader):
         logger.info(f"Inference for image {i}")
         ref_img = ref_img.to(device)
        
