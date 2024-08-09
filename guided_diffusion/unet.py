@@ -43,7 +43,7 @@ def create_model(
 ):
     if channel_mult == "":
         if image_size == 512:
-            channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
+            channel_mult = (1, 1, 2, 2, 4, 4)
         elif image_size == 256:
             channel_mult = (1, 1, 2, 2, 4, 4)
         elif image_size == 128:
@@ -66,9 +66,9 @@ def create_model(
 
     model= UNetModel(
         image_size=image_size,
-        in_channels=3,
+        in_channels=6,
         model_channels=num_channels,
-        out_channels=(3 if not learn_sigma else 6),
+        out_channels=(6 if not learn_sigma else 12),
         num_res_blocks=num_res_blocks,
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,
@@ -77,11 +77,11 @@ def create_model(
         use_checkpoint=use_checkpoint,
         use_fp16=use_fp16,
         num_heads=num_heads,
-        num_head_channels=num_head_channels,
+        # num_head_channels=num_head_channels,
         num_heads_upsample=num_heads_upsample,
         use_scale_shift_norm=use_scale_shift_norm,
-        resblock_updown=resblock_updown,
-        use_new_attention_order=use_new_attention_order,
+        # resblock_updown=resblock_updown,
+        # use_new_attention_order=use_new_attention_order,
     )
 
     try:

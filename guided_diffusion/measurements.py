@@ -61,6 +61,7 @@ class LinearOperator(ABC):
         return self.ortho_project(measurement, **kwargs) - self.forward(data, **kwargs)
 
 
+@register_operator('recon')
 class ReconOperatorSingle(LinearOperator):
     def __init__(self) -> None:
         super().__init__()
@@ -80,7 +81,7 @@ class ReconOperatorSingle(LinearOperator):
         mask       : [3, th, tw] -> 3 Frames, target H, target W
         csm        : [3, 10, ch, cw] -> One sense map per frame, 10 senses total
         """
-        nf, th, tw = mask.shape
+        _, nf, th, tw = mask.shape
         image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
         # [b, 6, th, tw]
         f0 = image_space[:, 0:2]
@@ -91,9 +92,12 @@ class ReconOperatorSingle(LinearOperator):
         )
         image_space = torch.view_as_complex(image_space)
         assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
-        image_senes = csms.unsqueeze(0) * image_space.unsqueeze(2)
+        # print("IMAGE -> ", image_space.shape)
+        # print("COILS -> ", csms.shape)
+        # print("MASK -> ", mask.shape)
+        image_senes = csms * image_space.unsqueeze(2)
         kspace_image = fft(image_senes)
-        mask = mask.unsqueeze(1).repeat(1,10,1,1)
+        mask = mask.unsqueeze(2).repeat(1,1,10,1,1)
         kspace_image = kspace_image * mask
         return kspace_image
 
@@ -105,7 +109,9 @@ class ReconOperatorSingle(LinearOperator):
         """
         
         image_space = ifft(kspace_image)
-        image_space = torch.sum(image_space * csm.unsqueeze(0).conj(), dim=2)
+        # print("IMAGE SPACE -> ", image_space.shape)
+        image_space = torch.sum(image_space * csm.conj(), dim=2)
+        # print("COIL COMB   -> ", image_space.shape)
         f0 = image_space[:, 0]
         f1 = image_space[:, 1]
         f2 = image_space[:, 2]
@@ -117,7 +123,7 @@ class ReconOperatorSingle(LinearOperator):
         dim=1
         )
         image_space = F.interpolate(image_space, tuple(dest_size), mode='nearest-exact')
-        return image_space
+        return image_space.float()
 
 
 # =============

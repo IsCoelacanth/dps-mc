@@ -162,6 +162,7 @@ class ReconDataset(Dataset):
             # [frames, slices, coils, h, w]
             dataset = []
             kspace_data = load_kdata(self.files)
+            print("DATASET SHAPE:", kspace_data.shape)
             fname = self.files.split("/")[-1].replace(".mat", "")  # type: ignore
             # [frames, h, w]
             mask_data = loadmat(
@@ -172,8 +173,16 @@ class ReconDataset(Dataset):
             self.total_frames = kspace_data.shape[0]
             ns = kspace_data.shape[1]
             ns1 = ns//2 - 1
-            ns2 = ns//2 
-            for i in [ns1, ns2]: 
+            ns2 = ns//2
+            slice_list = [ns1, ns2] 
+            if ns == 1:
+                ns1 = 0
+                ns2 = 0
+                slice_list = [0]
+            
+            jsize = kspace_data.shape[0] if 'mapping' in self.files.lower() else 3
+            for i in slice_list:
+                # for j in range(jsize): 
                 for j in range(kspace_data.shape[0]):
                     dataset.append([j, i])
             self.dataset = dataset
@@ -184,12 +193,12 @@ class ReconDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        slice, f0 = self.dataset[index]
+        f0, sl = self.dataset[index]
 
         f1 = (f0 + 1) % self.total_frames
         f2 = (f0 + 2) % self.total_frames
 
-        current_kspace = self.kdata[:, slice]
+        current_kspace = self.kdata[:, sl]
 
         image_space = torch.from_numpy(current_kspace)
         image_space = ifft(image_space)
@@ -230,9 +239,9 @@ class ReconDataset(Dataset):
                                          )
         csm_output = torch.from_numpy(np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]]))
 
-        guidance = {'slice_no': slice, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks}
+        guidance = {'slice_no': sl, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks}
 
-        return out, guidance
+        return out.float(), guidance
 
 
 
@@ -271,7 +280,7 @@ if __name__ == "__main__":
 
     print("Len:", len(dataset))
 
-    a, guide = dataset[42]
+    a, guide = dataset[12]
 
     print("\nBatch ->")
     print(type(a))
@@ -297,9 +306,9 @@ if __name__ == "__main__":
     print(type(f))
     print(f.shape)
 
-    y = opp.A(a.unsqueeze(0), torch.from_numpy(f), torch.from_numpy(d))
+    y = opp.A(a.unsqueeze(0), f, d)
 
-    z = opp.At(y, torch.from_numpy(d), a.shape[-2: ])
+    z = opp.At(y, d, a.shape[-2: ])
 
     np.save("input.npy", a.numpy())
     np.save("kspace.npy", e)
@@ -312,5 +321,5 @@ if __name__ == "__main__":
 
     for a, b in dataloader:
         print(a.shape)
-        print(b)
+        print(len(b), b['slice_no'], b['frame_no'], b['kspace'].shape)
 

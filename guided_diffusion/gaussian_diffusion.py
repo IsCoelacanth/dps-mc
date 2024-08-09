@@ -167,6 +167,7 @@ class GaussianDiffusion:
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
+    # @torch.no_grad()
     def p_sample_loop(self,
                       model,
                       x_start,
@@ -175,6 +176,7 @@ class GaussianDiffusion:
                       record,
                       save_root,
                       operator,
+                      guidance,
                       ):
         """
         The function used for sampling from noise.
@@ -186,21 +188,24 @@ class GaussianDiffusion:
         for idx in pbar:
             time = torch.tensor([idx] * img.shape[0], device=device)
             
-            img = img.requires_grad_()
-            out = self.p_sample(x=img, t=time, model=model, operator=operator)
+            # img = img.requires_grad_()
+            out, delta = self.p_sample(x=img, t=time, model=model, operator=(operator, guidance, measurement))
             
             # Give condition.
-            noisy_measurement = self.q_sample(measurement, t=time)
+            # noisy_measurement = self.q_sample(measurement, t=time)
 
-            # TODO: how can we handle argument for different condition method?
-            img, distance = measurement_cond_fn(x_t=out['sample'],
-                                      measurement=measurement,
-                                      noisy_measurement=noisy_measurement,
-                                      x_prev=img,
-                                      x_0_hat=out['pred_xstart'])
+            # # TODO: how can we handle argument for different condition method?
+            # img, distance = measurement_cond_fn(x_t=out['sample'],
+            #                           measurement=measurement,
+            #                           noisy_measurement=noisy_measurement,
+            #                           x_prev=img,
+            #                           x_0_hat=out['pred_xstart'])
+            img = out['sample']
             img = img.detach_()
-           
-            pbar.set_postfix({'distance': distance.item()}, refresh=False)
+            if idx % 2 == 0:
+                np.save(f'pred_{idx}.npy', out['pred_xstart'].detach().cpu().numpy())
+            distance = torch.linalg.norm(measurement - operator.A(img, guidance['mask'], guidance['sense_maps']))
+            pbar.set_postfix({'distance': round(distance.item(), 4), 'err_delta': round(delta.item(), 4)}, refresh=False)
             if record:
                 if idx % 10 == 0:
                     file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
@@ -208,7 +213,7 @@ class GaussianDiffusion:
 
         return img       
         
-    def p_sample(self, model, x, t, o):
+    def p_sample(self, model, x, t, operator):
         raise NotImplementedError
 
     def p_mean_variance(self, model, x, t):
@@ -373,12 +378,47 @@ class DDPM(SpacedDiffusion):
             sample += torch.exp(0.5 * out['log_variance']) * noise
 
         return {'sample': sample, 'pred_xstart': out['pred_xstart']}
+
+
+def create_freq_mask(shape, device, acs_region):
+    # shape is [b, f, c, h, w]
+    mask = torch.zeros(shape, device=device)
+    if isinstance(acs_region, tuple):
+        w = acs_region[0]//2
+        center = [shape[-2]//2, shape[-1]//2]
+        mask[:, :, :, center[0]-w:center[0]+2, center[1]-w:center[1]+w] = 1
+        return mask
+    elif isinstance(acs_region, int):
+        w = acs_region // 2
+        center = shape[-2] // 2
+        mask[:, :, :, center-w:center+w, :] = 1
+        return mask
+    else:
+        raise TypeError(f"Uknown type of ACS region: {type(acs_region)}")
     
+def frequency_decomposed_backproject(x_estimate, y, operator, mask, csm):
+    h, w = x_estimate.shape[-2:]
+    x_freq = operator.A(x_estimate, mask, csm) # [b, f, c, h, w]
+    freq_mask = create_freq_mask(x_freq.shape, x_estimate.device, (32, 32))
+    x_low_freq = x_freq * freq_mask
+    x_high_freq = x_freq * (1-freq_mask)
+
+    y_low_freq = y * freq_mask
+    y_high_freq = y * (1-freq_mask)
+
+    loss = ((x_low_freq - y_low_freq) * 0.4 + 0.6*(x_high_freq - y_high_freq))
+
+    error = operator.At(loss, csm, [h, w])
+
+    return error, loss
 
 @register_sampler(name='ddim')
 class DDIM(SpacedDiffusion):
-    def p_sample(self, model, x, t, o, eta=0.0):
-        out = self.p_mean_variance(model, x, t)
+    def p_sample(self, model, x, t, operator, eta=0.0):
+        base_eta = 3.0
+        op, guide, y = operator
+        with torch.no_grad():
+            out = self.p_mean_variance(model, x, t)
         
         eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
         
@@ -391,8 +431,27 @@ class DDIM(SpacedDiffusion):
         )
 
         x_0_pred = out['pred_xstart']
-        x_0_pred = x_0_pred - o.At(o.A(x_0_pred, _, _, _) - y, _, _)
+        h, w = x.shape[-2:]
+        # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
+        back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
+        err_norm = torch.linalg.norm(loss)
+        if hasattr(self, 'prev_err_norm'):
+            err_delta = self.prev_err_norm - err_norm # -> Best method
+            err_eta = base_eta * (1 + torch.tanh(err_delta)*0.5) # -> Best method
+            self.prev_err_norm = err_norm
+        else:
+            err_eta = base_eta
+            self.prev_err_norm = err_norm
+            err_delta = torch.zeros(1, device=x.device)
+        x_0_pred = x_0_pred -  back_projection_err * err_eta
 
+        # Step 4: Apply low-rank regularization (simplified)
+        U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
+        S = torch.clamp(S - 0.1, min=0)  # Soft thresholding
+        x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
+
+
+        out['pred_xstart'] = x_0_pred
         # Equation 12.
         noise = torch.randn_like(x)
         mean_pred = (
@@ -401,10 +460,10 @@ class DDIM(SpacedDiffusion):
         )
 
         sample = mean_pred
-        if t != 0:
+        if not torch.all(t == 0):
             sample += sigma * noise
         
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+        return {"sample": sample, "pred_xstart": out["pred_xstart"]}, torch.tanh(err_delta)*0.5
 
     def predict_eps_from_x_start(self, x_t, t, pred_xstart):
         coef1 = extract_and_expand(self.sqrt_recip_alphas_cumprod, t, x_t)

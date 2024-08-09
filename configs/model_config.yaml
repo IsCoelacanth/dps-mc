@@ -1,13 +1,13 @@
 # Defaults for image training.
 
-image_size: 256
+image_size: 512
 num_channels: 128
-num_res_blocks: 1
+num_res_blocks: 3
 channel_mult: ""
-learn_sigma: True
+learn_sigma: False
 class_cond: False
 use_checkpoint: False
-attention_resolutions: 16
+attention_resolutions: "16,8"
 num_heads: 4
 num_head_channels: 64
 num_heads_upsample: -1
@@ -17,4 +17,5 @@ resblock_updown: True
 use_fp16: False
 use_new_attention_order: False
 
-model_path: models/ffhq_10m.pt
+model_path: /home/anurag/Code/DiffuseRecon/cmr2024/ema_0.9999_950000.pt
+# model_path: /home/anurag/Code/DiffuseRecon/cmr_bal2024/ema_0.9999_200000.pt
