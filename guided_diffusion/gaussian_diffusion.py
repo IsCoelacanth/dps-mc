@@ -36,14 +36,16 @@ def create_sampler(sampler,
                    dynamic_threshold,
                    clip_denoised,
                    rescale_timesteps,
-                   timestep_respacing=""):
+                   timestep_respacing="", forward=False):
     
     sampler = get_sampler(name=sampler)
     
     betas = get_named_beta_schedule(noise_schedule, steps)
     if not timestep_respacing:
         timestep_respacing = [steps]
-         
+
+    if forward:
+        timestep_respacing = "50" 
     return sampler(use_timesteps=space_timesteps(steps, timestep_respacing),
                    betas=betas,
                    model_mean_type=model_mean_type,
@@ -167,6 +169,17 @@ class GaussianDiffusion:
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
+    @torch.no_grad()
+    def q_sample_loop(self, model, x_start):
+        img = x_start
+        device = x_start.device
+        pbar = tqdm(list(range(self.num_timesteps//2-1)), desc="Running Forward Diffusion")
+        for idx in pbar:
+            time = torch.tensor([idx]*img.shape[0], device=device)
+            out = self.q_sample_ddim(model, img, time)
+            img = out['sample']
+        return img
+
     # @torch.no_grad()
     def p_sample_loop(self,
                       model,
@@ -184,7 +197,7 @@ class GaussianDiffusion:
         img = x_start
         device = x_start.device
 
-        pbar = tqdm(list(range(self.num_timesteps))[::-1])
+        pbar = tqdm(list(range(self.num_timesteps))[::-1], desc="Running Reverse Diffusion")
         for idx in pbar:
             time = torch.tensor([idx] * img.shape[0], device=device)
             
@@ -214,6 +227,9 @@ class GaussianDiffusion:
         return img       
         
     def p_sample(self, model, x, t, operator):
+        raise NotImplementedError
+    
+    def q_sample_ddim(self, model, x, t, eta=0.4, clip=True):
         raise NotImplementedError
 
     def p_mean_variance(self, model, x, t):
@@ -369,6 +385,9 @@ class _WrappedModel:
 
 @register_sampler(name='ddpm')
 class DDPM(SpacedDiffusion):
+    def _register_forward_coeffs(self, eta=0.4):
+        pass
+
     def p_sample(self, model, x, t, o):
         out = self.p_mean_variance(model, x, t)
         sample = out['mean']
@@ -414,6 +433,39 @@ def frequency_decomposed_backproject(x_estimate, y, operator, mask, csm):
 
 @register_sampler(name='ddim')
 class DDIM(SpacedDiffusion):
+
+    def __init__(self, use_timesteps, **kwargs):
+        super().__init__(use_timesteps, **kwargs)
+        self._register_forward_coeffs()
+
+    def _register_forward_coeffs(self, eta=0.1):
+        betas = self.betas
+        betas_next = np.append(betas[1:], 0.0)
+        assert len(betas_next) == len(betas), "APPEND FAILED"
+        alphas = self.alphas_cumprod_next
+        self.coeff_1 = np.sqrt(1-alphas-eta*betas_next)
+        self.coeff_2 = np.sqrt(eta * betas_next)
+        # print(self.coeff_1, self.coeff_2)
+
+    def q_sample_ddim(self, model, x, t, eta=0.4, clip=True):
+        with torch.no_grad():
+            out = self.p_mean_variance(model, x, t)
+        eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
+        x_0_pred = out['pred_xstart']
+
+        if clip:
+            x_0_pred = torch.clamp(x_0_pred, -1, 1)
+
+        alpha_bar_next = extract_and_expand(self.alphas_cumprod_next, t, x)
+        beta = extract_and_expand(self.betas, t+1, x)
+
+        c1 = extract_and_expand(self.coeff_1, t, x)
+        c2 = extract_and_expand(self.coeff_2, t, x)
+
+        mean = x_0_pred * torch.sqrt(alpha_bar_next) + c1 * eps + c2 * torch.randn_like(x_0_pred)
+        return {'sample': mean, 'pred_xstart': x_0_pred}
+
+
     def p_sample(self, model, x, t, operator, eta=0.0):
         base_eta = 3.0
         op, guide, y = operator
@@ -431,6 +483,7 @@ class DDIM(SpacedDiffusion):
         )
 
         x_0_pred = out['pred_xstart']
+        x_0_pred = torch.clamp(x_0_pred, -1, 1)
         h, w = x.shape[-2:]
         # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
         back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])

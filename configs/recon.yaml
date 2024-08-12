@@ -6,7 +6,7 @@ conditioning:
 
 data:
   name: recon
-  root: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Cine/TrainingSet/FullSample/P011/cine_sax.mat
+  root: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Cine/TrainingSet/FullSample/P011/cine_lax.mat
   mask_path: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Cine/TrainingSet/Mask_Task2/P011/
   us_mask_type: ktGaussian4
   single_file_eval: true

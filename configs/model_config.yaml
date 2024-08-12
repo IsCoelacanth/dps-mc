@@ -17,5 +17,4 @@ resblock_updown: True
 use_fp16: False
 use_new_attention_order: False
 
-model_path: /home/anurag/Code/DiffuseRecon/cmr2024/ema_0.9999_950000.pt
-# model_path: /home/anurag/Code/DiffuseRecon/cmr_bal2024/ema_0.9999_200000.pt
+model_path: /home/anurag/Code/DiffuseRecon/cmr2024/ema_0.9999_1000000.pt

@@ -73,11 +73,16 @@ def main():
 
     # Load diffusion sampler
     sampler = create_sampler(**diffusion_config)
+    forwarder = create_sampler(**diffusion_config, forward=True)
     sample_fn = partial(
         sampler.p_sample_loop,
         model=model,
         measurement_cond_fn=measurement_cond_fn,
         operator=operator,
+    )
+    forward_fn = partial(
+        forwarder.q_sample_loop,
+        model=model
     )
 
     # Working directory
@@ -112,8 +117,13 @@ def main():
         # Sampling
         np.save("start.npy", x_start.detach().cpu().numpy())
         np.save("gt.npy", ref_img.detach().cpu().numpy())
+
+        forw = forward_fn(
+            x_start = x_start
+        )
+
         sample = sample_fn(
-            x_start=x_start,
+            x_start=forw,
             measurement=y_n,
             record=False,
             save_root=out_path,
