@@ -162,7 +162,7 @@ class ReconDataset(Dataset):
             # [frames, slices, coils, h, w]
             dataset = []
             kspace_data = load_kdata(self.files)
-            print("DATASET SHAPE:", kspace_data.shape)
+            # print("DATASET SHAPE:", kspace_data.shape)
             fname = self.files.split("/")[-1].replace(".mat", "")  # type: ignore
             # [frames, h, w]
             mask_data = loadmat(
@@ -183,7 +183,7 @@ class ReconDataset(Dataset):
             jsize = kspace_data.shape[0] if 'mapping' in self.files.lower() else 3
             for i in slice_list:
                 # for j in range(jsize): 
-                for j in range(kspace_data.shape[0]):
+                for j in range(jsize):
                     dataset.append([j, i])
             self.dataset = dataset
         else:
@@ -229,6 +229,8 @@ class ReconDataset(Dataset):
         max_val = abs(out).max()
         out /= max_val
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
+        h, w = out.shape[-2:]
+        gt_image = out.clone()
         out = interpolate(out.unsqueeze(0), (256, 512), mode="nearest-exact").squeeze()
 
         kspace_output = torch.from_numpy(np.stack([
@@ -239,7 +241,7 @@ class ReconDataset(Dataset):
                                          )
         csm_output = torch.from_numpy(np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]]))
 
-        guidance = {'slice_no': sl, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks}
+        guidance = {'slice_no': sl, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks, 'shape': [h, w], 'gt_image': gt_image}
 
         return out.float(), guidance
 

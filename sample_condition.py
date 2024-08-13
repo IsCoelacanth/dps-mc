@@ -1,9 +1,11 @@
 from functools import partial
+import json
 import os
 import argparse
 import yaml
 
 import torch
+from torch.nn.functional import interpolate
 import numpy as np
 
 
@@ -80,10 +82,7 @@ def main():
         measurement_cond_fn=measurement_cond_fn,
         operator=operator,
     )
-    forward_fn = partial(
-        forwarder.q_sample_loop,
-        model=model
-    )
+    forward_fn = partial(forwarder.q_sample_loop, model=model)
 
     # Working directory
     out_path = os.path.join(args.save_dir, measure_config["operator"]["name"])
@@ -93,61 +92,86 @@ def main():
 
     # Prepare dataloader
     data_config = task_config["data"]
-    dataset = get_dataset(**data_config)
-    loader = get_dataloader(dataset, batch_size=4, num_workers=0, train=False)
 
-    # Do Inference
-    print("TOTAL BATCHES: ", len(loader))
-    for i, (ref_img, guide) in enumerate(loader):
-        logger.info(f"Inference for image {i}")
-        ref_img = ref_img.to(device)
+    with open(data_config["datapath"], "r") as f:
+        val_files = json.load(f)
+    print(
+        "LOADED CONTRASTS: ", list(val_files.keys())
+    )
+    patterns = data_config["masks"]
+    accelerations = data_config["accs"]
+    base_mask_path = data_config["mask_path"]
+    sfe_mode = data_config["single_file_eval"]
+    destination_dir = data_config['dest_dir']
 
-        for k in guide:
-            guide[k] = guide[k].to(device)
+    for contrast in val_files:
+        if not os.path.exists(os.path.join(destination_dir, contrast)):
+            os.makedirs(os.path.join(destination_dir, contrast), exist_ok=True)
+        for acc in accelerations:
+            for pattern in patterns:
+                if not os.path.exists(os.path.join(destination_dir, contrast, f"{pattern}_{acc}")):
+                    os.makedirs(os.path.join(destination_dir, contrast, f"{pattern}_{acc}"), exist_ok=True)
+                for file in val_files[contrast]:
+                    # make mask-path for current file:
+                    file_mask = (
+                        base_mask_path.replace("CONTRAST_TYPE", contrast)
+                        + file.split("/")[-2]
+                    )
+                    dataset = get_dataset(
+                        name=data_config["name"],
+                        root=file,
+                        single_file_eval=sfe_mode,
+                        mask_path=file_mask,
+                        us_mask_type=f"{pattern}{acc}",
+                    )
+                    loader = get_dataloader(dataset, batch_size=4, num_workers=0, train=False)
 
-        y_n = operator.forward(
-            ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
-        )
-        x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
-        # y_n = noiser(y)
+                    logger.info(f"Running Inference for file: {(contrast, file.split('/')[-2:])} @ mask = {pattern}, @ acc = {acc} | num-batches: {len(loader)}")
+                    for i, (ref_img, guide) in enumerate(loader):
+                        ref_img = ref_img.to(device)
+                        for k in guide:
+                            if k == 'shape':
+                                # print(guide[k])
+                                continue
+                            guide[k] = guide[k].to(device)
 
-        # start recon from the UC data samples
-        x_start = x_start.clone().detach()
+                        y_n = operator.forward(
+                            ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
+                        )
+                        x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
+                        x_start = x_start.clone().detach()
+                        
+                        # create starting seed image
+                        forw = forward_fn(x_start=x_start)
 
-        # Sampling
-        np.save("start.npy", x_start.detach().cpu().numpy())
-        np.save("gt.npy", ref_img.detach().cpu().numpy())
+                        # MRI Recon
+                        sample = sample_fn(
+                            x_start=forw,
+                            measurement=y_n,
+                            record=False,
+                            save_root=out_path,
+                            guidance=guide,
+                        )
+                        ih, iw = guide['shape']
+                        ih = ih[0].item()
+                        iw = iw[0].item()
+                        sample = interpolate(sample, size=(ih, iw), mode='nearest-exact')
+                        gt_image = guide['gt_image']
 
-        forw = forward_fn(
-            x_start = x_start
-        )
-
-        sample = sample_fn(
-            x_start=forw,
-            measurement=y_n,
-            record=False,
-            save_root=out_path,
-            guidance=guide,
-        )
-        # exit()
-        i = 0
-        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
-            np.save(
-                f"{sl}__{fr}.npy",
-                {
-                    "gt": ref_img[i].squeeze().detach().cpu().numpy(),
-                    "pr": sample[i].detach().squeeze().cpu().numpy(),
-                },
-                allow_pickle=True,
-            )
-        # for i, fn in enumerate(file_name):
-        #     result = {
-        #             'undersampled_input': inputs[i].detach().cpu().numpy(),
-        #             'ground_truth': gt[i].detach().cpu().numpy(),
-        #             'recon': sample[i].detach().cpu().numpy(),
-        #             'kspace': kspace[i].detach().cpu().numpy(),
-        #             }
-        #     np.save(os.path.join(out_path, fn), result, allow_pickle=True) # type: ignore
+                        # 
+                        # exit()
+                        i = 0
+                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
+                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
+                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
+                            np.save(
+                                save_name,
+                                {
+                                    "gt": gt_image[i].squeeze().detach().cpu().numpy(),
+                                    "pr": sample[i].detach().squeeze().cpu().numpy(),
+                                },
+                                allow_pickle=True,
+                            )
 
 
 if __name__ == "__main__":
