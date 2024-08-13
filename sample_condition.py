@@ -142,11 +142,11 @@ def main():
                         x_start = x_start.clone().detach()
                         
                         # create starting seed image
-                        forw = forward_fn(x_start=x_start)
+                        x_start = torch.randn_like(x_start)
 
                         # MRI Recon
                         sample = sample_fn(
-                            x_start=forw,
+                            x_start=x_start,
                             measurement=y_n,
                             record=False,
                             save_root=out_path,

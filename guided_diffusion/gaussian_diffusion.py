@@ -485,24 +485,24 @@ class DDIM(SpacedDiffusion):
         x_0_pred = out['pred_xstart']
         x_0_pred = torch.clamp(x_0_pred, -1, 1)
         h, w = x.shape[-2:]
-        # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
-        back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
-        err_norm = torch.linalg.norm(loss)
-        if hasattr(self, 'prev_err_norm'):
-            err_delta = self.prev_err_norm - err_norm # -> Best method
-            err_eta = base_eta * (1 + torch.tanh(err_delta)*0.5) # -> Best method
-            self.prev_err_norm = err_norm
-        else:
-            err_eta = base_eta
-            self.prev_err_norm = err_norm
-            err_delta = torch.zeros(1, device=x.device)
-        x_0_pred = x_0_pred -  back_projection_err * err_eta
+        x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
+        # back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
+        # err_norm = torch.linalg.norm(loss)
+        # if hasattr(self, 'prev_err_norm'):
+        #     err_delta = self.prev_err_norm - err_norm # -> Best method
+        #     err_eta = base_eta * (1 + torch.tanh(err_delta)*0.5) # -> Best method
+        #     self.prev_err_norm = err_norm
+        # else:
+        #     err_eta = base_eta
+        #     self.prev_err_norm = err_norm
+        #     err_delta = torch.zeros(1, device=x.device)
+        # x_0_pred = x_0_pred -  back_projection_err * err_eta
 
-        # Step 4: Apply low-rank regularization (simplified)
-        U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
-        S = torch.clamp(S - 0.1, min=0)  # Soft thresholding
-        x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
-
+        # # Step 4: Apply low-rank regularization (simplified)
+        # U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
+        # S = torch.clamp(S - 0.1, min=0)  # Soft thresholding
+        # x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
+        err_delta = torch.tensor(2.0)
 
         out['pred_xstart'] = x_0_pred
         # Equation 12.
