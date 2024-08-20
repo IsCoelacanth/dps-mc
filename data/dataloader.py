@@ -65,6 +65,8 @@ def estimate_sensitivity_maps_smooth(image_complex, eps=1e-6):
     """
     Estimate sensitivity maps using adaptive combine method.
     """
+    if len(image_complex.shape) != 4:
+        image_complex = image_complex.unsqueeze(0)
     # Compute RSS
     rss_image = rss(image_complex, dim=1)
 
@@ -94,7 +96,7 @@ def estimate_sensitivity_maps_smooth(image_complex, eps=1e-6):
         torch.sum(torch.abs(sens_maps_smooth) ** 2, dim=1, keepdim=True).sqrt() + eps
     )
 
-    return sens_maps_norm
+    return sens_maps_norm.squeeze(0)
 
 
 def loadmat(filename):
@@ -142,73 +144,77 @@ class ReconDataset(Dataset):
         self,
         root: str,
         mask_path: str,
-        us_mask_type: str,
         single_file_eval: bool = False,
     ) -> None:
         super().__init__()
         # print(f"Loading Dataset from: {root} and masks from {mask_path}")
-        if not single_file_eval:
-            self.files = glob(root + "/**/*.mat", recursive=True)
-            self.files = sorted(self.files, key=lambda x: int(x.split("/")[-2][1:]))
-        else:
-            self.files = root
+        self.files = root
         self.sfe = single_file_eval
-        self.mask_type = us_mask_type
-        self.mask_path = mask_path
+        self.mask = mask_path
         self.build()
 
     def build(self):
-        if self.sfe:
-            # single file eval mode
-            # [frames, slices, coils, h, w]
-            dataset = []
-            kspace_data = load_kdata(self.files)
-            # print("DATASET SHAPE:", kspace_data.shape)
-            fname = self.files.split("/")[-1].replace(".mat", "")  # type: ignore
-            # [frames, h, w]
-            mask_data = loadmat(
-                os.path.join(self.mask_path, fname + "_mask_" + self.mask_type + ".mat")
-            )["mask"]
-            self.kdata = kspace_data
-            self.mask = mask_data
-            self.total_frames = kspace_data.shape[0]
-            ns = kspace_data.shape[1]
-            ns1 = ns//2 - 1
-            ns2 = ns//2
-            slice_list = [ns1, ns2] 
-            if ns == 1:
-                ns1 = 0
-                ns2 = 0
-                slice_list = [0]
-            
-            jsize = kspace_data.shape[0] if 'mapping' in self.files.lower() else 3
-            for i in slice_list:
-                # for j in range(jsize): 
-                for j in range(jsize):
-                    dataset.append([j, i])
-            self.dataset = dataset
+        path, name = os.path.split(self.files)
+        # path = path to dataset
+        # name = P###_T1/2map_slice_contrast.npy
+        pid, cont, slice_no, ext = name.split('_')
+        slice_no = int(slice_no)
+
+        # check slice + 1, + 2 exist
+        if os.path.exists(os.path.join(path, '_'.join([pid, cont, str(slice_no+1), ext]))):
+            print('s+1 exists')
+            if os.path.exists(os.path.join(path, '_'.join([pid, cont, str(slice_no+2), ext]))):
+                print('s+2 exists')
+                f2 = slice_no + 1
+                f3 = slice_no + 2
+            else:
+                print('s+2 !exists')
+                # s+1 exists, but not s+2
+                f2 = slice_no + 1
+                f3 = slice_no - 1
         else:
-            raise NotImplementedError("Only supports single item inference")
+            f2 = slice_no - 1
+            f3 = slice_no - 2
+        
+        self.path = path
+        self.fname = name
+        self.frames = [slice_no, f2, f3]
+        self.cont = cont
+        self.ext = ext
+        self.f_id = pid
 
     def __len__(self):
-        return len(self.dataset)
+        return 1
 
     def __getitem__(self, index):
-        f0, sl = self.dataset[index]
 
-        f1 = (f0 + 1) % self.total_frames
-        f2 = (f0 + 2) % self.total_frames
+        _1, _2, _3 = self.frames
+        f1_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_1), self.ext]))
+        f2_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_2), self.ext]))
+        f3_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_3), self.ext]))
 
-        current_kspace = self.kdata[:, sl]
+        # multi-coil images 10 x h x w
+        frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['complex-image-space'])
+        csm_frame0 = estimate_sensitivity_maps_smooth(frame0.unsqueeze(0)).squeeze()
+        frame0 = torch.sum(frame0 * csm_frame0.conj(), dim=0).numpy()
+        frame1 = torch.from_numpy(np.load(f2_path, allow_pickle=True)[()]['complex-image-space'])
+        csm_frame1 = estimate_sensitivity_maps_smooth(frame1.unsqueeze(0)).squeeze()
+        frame1 = torch.sum(frame1 * csm_frame1.conj(), dim=0).numpy()
+        frame2 = torch.from_numpy(np.load(f3_path, allow_pickle=True)[()]['complex-image-space'])
+        csm_frame2 = estimate_sensitivity_maps_smooth(frame2.unsqueeze(0)).squeeze()
+        frame2 = torch.sum(frame2 * csm_frame2.conj(), dim=0).numpy()
 
-        image_space = torch.from_numpy(current_kspace)
-        image_space = ifft(image_space)
-        sense_maps = estimate_sensitivity_maps_smooth(image_space)
-        fused = torch.sum(image_space * sense_maps.conj(), dim=1).numpy()
+        # multi-coil images 10 x h x w
+        # frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['complex-image-space'])
+        # csm_frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['csm-4x'])
+        # frame0 = torch.sum(frame0 * csm_frame0.conj(), dim=0).numpy()
+        # frame1 = torch.from_numpy(np.load(f2_path, allow_pickle=True)[()]['complex-image-space'])
+        # csm_frame1 = torch.from_numpy(np.load(f2_path, allow_pickle=True)[()]['csm-4x'])
+        # frame1 = torch.sum(frame1 * csm_frame1.conj(), dim=0).numpy()
+        # frame2 = torch.from_numpy(np.load(f3_path, allow_pickle=True)[()]['complex-image-space'])
+        # csm_frame2 = torch.from_numpy(np.load(f3_path, allow_pickle=True)[()]['csm-4x'])
+        # frame2 = torch.sum(frame2 * csm_frame2.conj(), dim=0).numpy()
 
-        frame0 = fused[f0]
-        frame1 = fused[f1]
-        frame2 = fused[f2]
 
         frame0, _ = normalize_complex(frame0)
         frame1, _ = normalize_complex(frame1)
@@ -223,7 +229,8 @@ class ReconDataset(Dataset):
         real2 = np.real(frame2)
         imag2 = np.imag(frame2)
 
-        masks = torch.from_numpy(np.stack([self.mask[f0], self.mask[f1], self.mask[f2]]))
+        masks = torch.from_numpy(self.mask)
+        masks = torch.stack([masks, masks, masks])
 
         out = np.stack([real0, imag0, real1, imag1, real2, imag2]).astype(np.float32)
         out = torch.from_numpy(out)
@@ -232,17 +239,11 @@ class ReconDataset(Dataset):
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
         h, w = out.shape[-2:]
         gt_image = out.clone()
-        out = interpolate(out.unsqueeze(0), (256, 512), mode="nearest-exact").squeeze()
+        out = interpolate(out.unsqueeze(0), (160, 512), mode="nearest-exact").squeeze()
 
-        kspace_output = torch.from_numpy(np.stack([
-            current_kspace[f0],
-            current_kspace[f1],
-            current_kspace[f2],
-        ])
-                                         )
-        csm_output = torch.from_numpy(np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]]))
+        csm_output = torch.from_numpy(np.stack([csm_frame0, csm_frame1, csm_frame2]))
 
-        guidance = {'slice_no': sl, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks, 'shape': [h, w], 'gt_image': gt_image}
+        guidance = {'pid': self.f_id, 'name': self.fname, 'sense_maps': csm_output, 'mask': masks, 'shape': [h, w], 'gt_image': gt_image}
 
         return out.float(), guidance
 
@@ -269,15 +270,14 @@ class FFHQDataset(VisionDataset):
 if __name__ == "__main__":
     from guided_diffusion.measurements import ReconOperatorSingle
 
-    root = "/bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Aorta/TrainingSet/FullSample/P002/aorta_sag.mat"
-    mask_path = "/bigdata/CMRxRecon2024/ChallengeData/MultiCoil/Aorta/TrainingSet/Mask_Task2/P002/"
-    mask_type = "ktRadial4"
+    root = "/bigdata/CMRxRecon2023/test/multi_coil/P007_T2map_4_1.npy"
+    mask_path = np.load('/home/anurag/Code/DiffuseRecon/acc4-t2-mask.npy')
     # mask_type = "ktGaussian24"
     # mask_type = "ktUniform24"
     sfe = True
 
     dataset = ReconDataset(
-        root=root, mask_path=mask_path, us_mask_type=mask_type, single_file_eval=sfe
+        root=root, mask_path=mask_path, single_file_eval=sfe
     )
     opp = ReconOperatorSingle()
 
@@ -289,7 +289,7 @@ if __name__ == "__main__":
     print(type(a))
     print(a.shape, a.min(), a.max(), a.mean(), a.std())
 
-    print(guide['slice_no'], guide['frame_no'])
+    print(guide['pid'], guide['name'], dataset.frames)
 
     # Coil Sense Maps
     d = guide['sense_maps']
@@ -297,24 +297,20 @@ if __name__ == "__main__":
     print(type(d))
     print(d.shape)
 
-    # Kspace
-    e = guide['kspace']
-    print("\nKspace")
-    print(type(e))
-    print(e.shape)
-
     # Masks
     f = guide['mask']
     print("\nMasks")
     print(type(f))
     print(f.shape)
 
-    y = opp.A(a.unsqueeze(0), f, d)
+    y = opp.A(a.unsqueeze(0), f.unsqueeze(0), d)
 
     z = opp.At(y, d, a.shape[-2: ])
 
+    gt = guide['gt_image']
+
     np.save("input.npy", a.numpy())
-    np.save("kspace.npy", e)
+    np.save("kspace.npy", gt)
     np.save("mask.npy", f)
     np.save("csm.npy", d)
     np.save("output.npy", y.numpy())
@@ -324,5 +320,5 @@ if __name__ == "__main__":
 
     for a, b in dataloader:
         print(a.shape)
-        print(len(b), b['slice_no'], b['frame_no'], b['kspace'].shape)
+        print(len(b))
 

@@ -8,16 +8,16 @@ data:
   name: recon
   accs:
     - 4
-    - 12
-    - 24
+    - 8
+    - 10
   masks: 
     - ktGaussian
     - ktRadial
     - ktUniform
-  datapath: /home/anurag/Code/notebooks/PaperValDataCine.json
+  datapath: /home/anurag/Code/dps-mc/2023_dataset.json
   mask_path: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/CONTRAST_TYPE/TrainingSet/Mask_Task2/
   single_file_eval: true
-  dest_dir: /bigdata/CMRxRecon2024/ValResults/test/
+  dest_dir: /bigdata/CMRxRecon2023/TestResults/
 
 measurement:
   operator:

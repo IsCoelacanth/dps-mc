@@ -98,9 +98,9 @@ def main():
     print(
         "LOADED CONTRASTS: ", list(val_files.keys())
     )
-    patterns = data_config["masks"]
+
     accelerations = data_config["accs"]
-    base_mask_path = data_config["mask_path"]
+
     sfe_mode = data_config["single_file_eval"]
     destination_dir = data_config['dest_dir']
 
@@ -108,78 +108,65 @@ def main():
         if not os.path.exists(os.path.join(destination_dir, contrast)):
             os.makedirs(os.path.join(destination_dir, contrast), exist_ok=True)
         for acc in accelerations:
-            for pattern in patterns:
-                if not os.path.exists(os.path.join(destination_dir, contrast, f"{pattern}_{acc}")):
-                    os.makedirs(os.path.join(destination_dir, contrast, f"{pattern}_{acc}"), exist_ok=True)
-                for file in val_files[contrast]:
-                    # make mask-path for current file:
-                    file_mask = (
-                        base_mask_path.replace("CONTRAST_TYPE", contrast)
-                        + file.split("/")[-2]
-                    )
-                    dataset = get_dataset(
-                        name=data_config["name"],
-                        root=file,
-                        single_file_eval=sfe_mode,
-                        mask_path=file_mask,
-                        us_mask_type=f"{pattern}{acc}",
-                    )
-                    loader = get_dataloader(dataset, batch_size=4, num_workers=0, train=False)
+            if not os.path.exists(os.path.join(destination_dir, contrast, f'acc{acc}')):
+                os.makedirs(os.path.join(destination_dir, contrast, f'acc{acc}'), exist_ok=True)
+            for file in val_files[contrast]:
+                # make mask-path for current file:
+                file_mask = np.load(f'/home/anurag/Code/DiffuseRecon/acc{acc}-{contrast}-mask.npy')
+                dataset = get_dataset(
+                    name=data_config["name"],
+                    root=file,
+                    single_file_eval=sfe_mode,
+                    mask_path=file_mask,
+                )
+                loader = get_dataloader(dataset, batch_size=4, num_workers=0, train=False)
 
-                    logger.info(f"Running Inference for file: {(contrast, file.split('/')[-2:])} @ mask = {pattern}, @ acc = {acc} | num-batches: {len(loader)}")
-                    for i, (ref_img, guide) in enumerate(loader):
-                        can_skip = []
-                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
-                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
-                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
-                            can_skip.append(os.path.exists(save_name))
-                        if all(can_skip):
-                            logger.info(f"Skipping batch {i} for file: {file}")
+                logger.info(f"Running Inference for file: {(contrast, file.split('/')[-2:])} @ acc = {acc} | num-batches: {len(loader)}")
+                for i, (ref_img, guide) in enumerate(loader):
+                    ref_img = ref_img.to(device)
+                    for k in guide:
+                        if k in ['shape', 'name', 'pid']:
+                            # print(guide[k])
                             continue
-                        ref_img = ref_img.to(device)
-                        for k in guide:
-                            if k == 'shape':
-                                # print(guide[k])
-                                continue
-                            guide[k] = guide[k].to(device)
+                        guide[k] = guide[k].to(device)
 
-                        y_n = operator.forward(
-                            ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
+                    y_n = operator.forward(
+                        ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
+                    )
+                    x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
+                    x_start = x_start.clone().detach()
+                    
+                    # create starting seed image
+                    forw = forward_fn(x_start=x_start)
+
+                    # MRI Recon
+                    sample = sample_fn(
+                        x_start=forw,
+                        measurement=y_n,
+                        record=False,
+                        save_root=out_path,
+                        guidance=guide,
+                    )
+                    ih, iw = guide['shape']
+                    ih = ih[0].item()
+                    iw = iw[0].item()
+                    sample = interpolate(sample, size=(ih, iw), mode='nearest-exact')
+                    gt_image = guide['gt_image']
+
+                    # 
+                    # exit()
+                    i = 0
+                    for name in guide['name']:
+                        save_name = os.path.join(destination_dir, contrast, f"acc{acc}", name)
+                        np.save(
+                            save_name,
+                            {
+                                'in': x_start[i].squeeze().detach().cpu().numpy(),
+                                "gt": gt_image[i].squeeze().detach().cpu().numpy(),
+                                "pr": sample[i].detach().squeeze().cpu().numpy(),
+                            },
+                            allow_pickle=True,
                         )
-                        x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
-                        x_start = x_start.clone().detach()
-                        
-                        # create starting seed image
-                        forw = forward_fn(x_start=x_start)
-
-                        # MRI Recon
-                        sample = sample_fn(
-                            x_start=forw,
-                            measurement=y_n,
-                            record=False,
-                            save_root=out_path,
-                            guidance=guide,
-                        )
-                        ih, iw = guide['shape']
-                        ih = ih[0].item()
-                        iw = iw[0].item()
-                        sample = interpolate(sample, size=(ih, iw), mode='nearest-exact')
-                        gt_image = guide['gt_image']
-
-                        # 
-                        # exit()
-                        i = 0
-                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
-                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
-                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
-                            np.save(
-                                save_name,
-                                {
-                                    "gt": gt_image[i].squeeze().detach().cpu().numpy(),
-                                    "pr": sample[i].detach().squeeze().cpu().numpy(),
-                                },
-                                allow_pickle=True,
-                            )
 
 
 if __name__ == "__main__":
