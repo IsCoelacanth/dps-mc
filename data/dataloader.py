@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch import fft as tfft
 from torch.nn.functional import interpolate
+from functools import lru_cache
 
 __DATASET__ = {}
 
@@ -122,7 +123,7 @@ def loadmat_group(group):
             data[k] = loadmat_group(v)
     return data
 
-
+@lru_cache(maxsize=20)
 def load_kdata(filename):
     """
     load kdata from .mat file
@@ -145,7 +146,7 @@ class ReconDataset(Dataset):
         single_file_eval: bool = False,
     ) -> None:
         super().__init__()
-        print(f"Loading Dataset from: {root} and masks from {mask_path}")
+        # print(f"Loading Dataset from: {root} and masks from {mask_path}")
         if not single_file_eval:
             self.files = glob(root + "/**/*.mat", recursive=True)
             self.files = sorted(self.files, key=lambda x: int(x.split("/")[-2][1:]))

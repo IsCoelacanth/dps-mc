@@ -128,6 +128,14 @@ def main():
 
                     logger.info(f"Running Inference for file: {(contrast, file.split('/')[-2:])} @ mask = {pattern}, @ acc = {acc} | num-batches: {len(loader)}")
                     for i, (ref_img, guide) in enumerate(loader):
+                        can_skip = []
+                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
+                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
+                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
+                            can_skip.append(os.path.exists(save_name))
+                        if all(can_skip):
+                            logger.info(f"Skipping batch {i} for file: {file}")
+                            continue
                         ref_img = ref_img.to(device)
                         for k in guide:
                             if k == 'shape':

@@ -14,10 +14,10 @@ data:
     - ktGaussian
     - ktRadial
     - ktUniform
-  datapath: /home/anurag/Code/notebooks/PaperValDataMapping.json
+  datapath: /home/anurag/Code/notebooks/PaperValDataCine.json
   mask_path: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/CONTRAST_TYPE/TrainingSet/Mask_Task2/
   single_file_eval: true
-  dest_dir: /bigdata/CMRxRecon2024/ValResults
+  dest_dir: /bigdata/CMRxRecon2024/ValResults/test/
 
 measurement:
   operator:
