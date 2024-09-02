@@ -215,8 +215,8 @@ class GaussianDiffusion:
             #                           x_0_hat=out['pred_xstart'])
             img = out['sample']
             img = img.detach_()
-            if idx % 2 == 0:
-                np.save(f'pred_{idx}.npy', out['pred_xstart'].detach().cpu().numpy())
+            # if idx % 2 == 0:
+            #     np.save(f'pred_{idx}.npy', out['pred_xstart'].detach().cpu().numpy())
             distance = torch.linalg.norm(measurement - operator.A(img, guidance['mask'], guidance['sense_maps']))
             pbar.set_postfix({'distance': round(distance.item(), 4), 'err_delta': round(delta.item(), 4)}, refresh=False)
             if record:
@@ -414,6 +414,51 @@ def create_freq_mask(shape, device, acs_region):
         return mask
     else:
         raise TypeError(f"Uknown type of ACS region: {type(acs_region)}")
+
+
+def ATA(x_0_pred, op, guide, h, w):
+    return op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']), guide['sense_maps'], [h, w])
+
+def CG(opr, guide, hw, measurement, x, n_inner=10, eps=1e-8):
+    r = measurement - ATA(x, opr, guide, *hw)
+    p = r.clone()
+    rs_old = torch.matmul(r.view(1, -1), r.view(1, -1).T)
+    for _ in range(n_inner):
+        Ap = ATA(p, opr, guide, *hw)
+        a = rs_old / torch.matmul(p.view(1, -1), Ap.view(1, -1).T)
+
+        x += a * p
+        r -= a * Ap
+
+        rs_new = torch.matmul(r.view(1, -1), r.view(1, -1).T)
+        
+        if torch.sqrt(rs_new) < eps:
+            break
+        p = r + (rs_new / rs_old) * p
+        rs_old = rs_new
+    return x
+
+def FISTA(opr, guide, hw, measurement, x_t,  M=2):
+    l_init = torch.randn_like(x_t)
+    for _ in range(20):
+        _x = ATA(l_init, opr, guide, *hw)
+        l_init = _x / torch.norm(_x)
+    L = torch.sqrt(torch.sum(torch.abs(opr.A(l_init, guide['mask'], guide['sense_maps']))**2) / torch.sum(torch.abs(l_init)**2))
+    # print("L: ", L)
+    x = x_t.clone()
+    z = x
+    t = torch.tensor(1.0)
+    for itr in range(M):
+        x_prev = x
+        grad = opr.At(opr.A(z, guide['mask'], guide['sense_maps']) - measurement, guide['sense_maps'], hw)
+        x = z - grad / L
+        if (torch.norm(x-x_prev) / torch.norm(x_prev)) < 1e-6 and itr > 10:
+            # print("\n\nConverged: ", itr)
+            break
+        t_n = (1 + torch.sqrt(1 + 4 * t**2)) / 2
+        z = x + ((t - 1) / t_n) * (x - x_prev)
+        t = t_n
+    return x
     
 def frequency_decomposed_backproject(x_estimate, y, operator, mask, csm):
     h, w = x_estimate.shape[-2:]
@@ -481,11 +526,21 @@ class DDIM(SpacedDiffusion):
             * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
             * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
-
+        sigma_b = (
+            1
+            * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
+            * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
+        )
+        # print(sigma_b.mean().item())
         x_0_pred = out['pred_xstart']
         x_0_pred = torch.clamp(x_0_pred, -1, 1)
         h, w = x.shape[-2:]
+        # DDNM :
         # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
+        err_delta = torch.tensor(1)
+        ee = torch.randn_like(x_0_pred) * sigma_b**0.5 / 8
+
+        # OURS SPA:
         back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
         err_norm = torch.linalg.norm(loss)
         if hasattr(self, 'prev_err_norm'):
@@ -496,12 +551,18 @@ class DDIM(SpacedDiffusion):
             err_eta = base_eta
             self.prev_err_norm = err_norm
             err_delta = torch.zeros(1, device=x.device)
-        x_0_pred = x_0_pred -  back_projection_err * err_eta
+        x_0_pred = x_0_pred - (back_projection_err * err_eta) / torch.linalg.norm(back_projection_err) + ee
 
         # Step 4: Apply low-rank regularization (simplified)
         U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
         S = torch.clamp(S - 0.1, min=0)  # Soft thresholding
         x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
+
+        # OURS DM_FAST = SPA + FISTA
+        x_0_pred = FISTA(op, guide, [h,w], y, x_0_pred)
+
+        # DDS:
+        # x_0_pred = CG(op, guide, [h,w],  ee+op.At(y, guide['sense_maps'], [h, w]), x_0_pred)
 
 
         out['pred_xstart'] = x_0_pred
