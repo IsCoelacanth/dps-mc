@@ -31,9 +31,7 @@ def get_dataset(name: str, root: str, **kwargs):
     return __DATASET__[name](root=root, **kwargs)
 
 
-def get_dataloader(
-    dataset: Dataset, batch_size: int, num_workers: int, train: bool
-):
+def get_dataloader(dataset: Dataset, batch_size: int, num_workers: int, train: bool):
     dataloader = DataLoader(
         dataset, batch_size, shuffle=train, num_workers=num_workers, drop_last=train
     )
@@ -123,6 +121,7 @@ def loadmat_group(group):
             data[k] = loadmat_group(v)
     return data
 
+
 @lru_cache(maxsize=20)
 def load_kdata(filename):
     """
@@ -173,17 +172,17 @@ class ReconDataset(Dataset):
             self.mask = mask_data
             self.total_frames = kspace_data.shape[0]
             ns = kspace_data.shape[1]
-            ns1 = ns//2 - 1
-            ns2 = ns//2
-            slice_list = [ns1, ns2] 
+            ns1 = ns // 2 - 1
+            ns2 = ns // 2
+            slice_list = [ns1, ns2]
             if ns == 1:
                 ns1 = 0
                 ns2 = 0
                 slice_list = [0]
-            
-            jsize = kspace_data.shape[0] if 'mapping' in self.files.lower() else 3
+
+            jsize = kspace_data.shape[0] if "mapping" in self.files.lower() else 3
             for i in slice_list:
-                # for j in range(jsize): 
+                # for j in range(jsize):
                 for j in range(jsize):
                     dataset.append([j, i])
             self.dataset = dataset
@@ -210,9 +209,9 @@ class ReconDataset(Dataset):
         frame1 = fused[f1]
         frame2 = fused[f2]
 
-        frame0, _ = normalize_complex(frame0)
-        frame1, _ = normalize_complex(frame1)
-        frame2, _ = normalize_complex(frame2)
+        frame0, mag0 = normalize_complex(frame0)
+        frame1, mag1 = normalize_complex(frame1)
+        frame2, mag2 = normalize_complex(frame2)
 
         real0 = np.real(frame0)
         imag0 = np.imag(frame0)
@@ -223,7 +222,9 @@ class ReconDataset(Dataset):
         real2 = np.real(frame2)
         imag2 = np.imag(frame2)
 
-        masks = torch.from_numpy(np.stack([self.mask[f0], self.mask[f1], self.mask[f2]]))
+        masks = torch.from_numpy(
+            np.stack([self.mask[f0], self.mask[f1], self.mask[f2]])
+        )
 
         out = np.stack([real0, imag0, real1, imag1, real2, imag2]).astype(np.float32)
         out = torch.from_numpy(out)
@@ -234,18 +235,32 @@ class ReconDataset(Dataset):
         gt_image = out.clone()
         out = interpolate(out.unsqueeze(0), (256, 512), mode="nearest-exact").squeeze()
 
-        kspace_output = torch.from_numpy(np.stack([
-            current_kspace[f0],
-            current_kspace[f1],
-            current_kspace[f2],
-        ])
-                                         )
-        csm_output = torch.from_numpy(np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]]))
+        kspace_output = torch.from_numpy(
+            np.stack(
+                [
+                    current_kspace[f0],
+                    current_kspace[f1],
+                    current_kspace[f2],
+                ]
+            )
+        )
+        csm_output = torch.from_numpy(
+            np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]])
+        )
 
-        guidance = {'slice_no': sl, 'frame_no': f0, 'sense_maps': csm_output, 'kspace': kspace_output, 'mask': masks, 'shape': [h, w], 'gt_image': gt_image}
+        guidance = {
+            "slice_no": sl,
+            "frame_no": f0,
+            "sense_maps": csm_output,
+            "kspace": kspace_output,
+            "mask": masks,
+            "shape": [h, w],
+            "gt_image": gt_image,
+            "stds": [mag0, mag1, mag2],
+            "max": max_val.item(),
+        }
 
         return out.float(), guidance
-
 
 
 @register_dataset(name="ffhq")
@@ -289,29 +304,29 @@ if __name__ == "__main__":
     print(type(a))
     print(a.shape, a.min(), a.max(), a.mean(), a.std())
 
-    print(guide['slice_no'], guide['frame_no'])
+    print(guide["slice_no"], guide["frame_no"])
 
     # Coil Sense Maps
-    d = guide['sense_maps']
+    d = guide["sense_maps"]
     print("\nCoil Sense Maps [est]")
     print(type(d))
     print(d.shape)
 
     # Kspace
-    e = guide['kspace']
+    e = guide["kspace"]
     print("\nKspace")
     print(type(e))
     print(e.shape)
 
     # Masks
-    f = guide['mask']
+    f = guide["mask"]
     print("\nMasks")
     print(type(f))
     print(f.shape)
 
     y = opp.A(a.unsqueeze(0), f, d)
 
-    z = opp.At(y, d, a.shape[-2: ])
+    z = opp.At(y, d, a.shape[-2:])
 
     np.save("input.npy", a.numpy())
     np.save("kspace.npy", e)
@@ -324,5 +339,4 @@ if __name__ == "__main__":
 
     for a, b in dataloader:
         print(a.shape)
-        print(len(b), b['slice_no'], b['frame_no'], b['kspace'].shape)
-
+        print(len(b), b["slice_no"], b["frame_no"], b["kspace"].shape)

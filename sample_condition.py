@@ -111,7 +111,7 @@ def main():
             for pattern in patterns:
                 if not os.path.exists(os.path.join(destination_dir, contrast, f"{pattern}_{acc}")):
                     os.makedirs(os.path.join(destination_dir, contrast, f"{pattern}_{acc}"), exist_ok=True)
-                for file in val_files[contrast]:
+                for file in val_files[contrast][:4]:
                     # make mask-path for current file:
                     file_mask = (
                         base_mask_path.replace("CONTRAST_TYPE", contrast)
@@ -138,7 +138,7 @@ def main():
                             continue
                         ref_img = ref_img.to(device)
                         for k in guide:
-                            if k == 'shape':
+                            if k in ['shape', 'stds', 'max']:
                                 # print(guide[k])
                                 continue
                             guide[k] = guide[k].to(device)
@@ -177,6 +177,9 @@ def main():
                                 {
                                     "gt": gt_image[i].squeeze().detach().cpu().numpy(),
                                     "pr": sample[i].detach().squeeze().cpu().numpy(),
+                                    "in": x_start[i].detach().squeeze().cpu().numpy(),
+                                    'stds': guide['stds'][i],
+                                    'max': guide['max'][i]
                                 },
                                 allow_pickle=True,
                             )
