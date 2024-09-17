@@ -3,7 +3,7 @@ from PIL import Image
 from typing import Callable, Optional
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import VisionDataset
-from fastmri import rss
+from fastmri import rss_complex
 import h5py
 import os
 import numpy as np
@@ -11,6 +11,11 @@ import torch
 from torch import fft as tfft
 from torch.nn.functional import interpolate
 from functools import lru_cache
+import torch.nn.functional as F
+import torch.fft as fft
+from .sens_maps import espirit
+from .espirit import estimate_sensitivity_map
+from tqdm.auto import tqdm
 
 __DATASET__ = {}
 
@@ -59,21 +64,25 @@ def make_gaussian_kernel(ksize: int, sigma: float = 0.5) -> torch.Tensor:
     return gaussian / gaussian.sum()
 
 
-def estimate_sensitivity_maps_smooth(image_complex, eps=1e-6):
+def estimate_sensitivity_maps_smooth(image_complex, rsimage=None, eps=1e-6):
     """
     Estimate sensitivity maps using adaptive combine method.
     """
-    # Compute RSS
-    rss_image = rss(image_complex, dim=1)
+    if rsimage is not None:
+        if rsimage.shape[1] == 10:
+            rss_image = rss_complex(torch.view_as_real(rsimage.contiguous()), dim=1)
+        else:
+            rss_image = torch.abs(torch.sum(rsimage, dim=1))
+    else:
+        rss_image = rss_complex(torch.view_as_real(image_complex.contiguous()), dim=1)
 
     # Estimate initial sensitivities
     sens_maps = image_complex / (rss_image.unsqueeze(1) + eps)
     f, coil, h, w = sens_maps.shape
-    # print(shape)
 
-    # Apply Gaussian smoothing (this is a simplified version, consider using proper 2D Gaussian filter)
     kernel_size = 5
-    kernel = make_gaussian_kernel(kernel_size, sigma=0.5)[None, None, ...]
+    kernel = make_gaussian_kernel(kernel_size, sigma=1)[None, None, ...]
+    kernel = kernel.to(image_complex.device)
     # print(kernel.shape)
     sens_maps = sens_maps.view(f * coil, 1, h, w)
 
@@ -93,6 +102,26 @@ def estimate_sensitivity_maps_smooth(image_complex, eps=1e-6):
     )
 
     return sens_maps_norm
+
+
+def smoothen_sense_maps(sens_maps):
+    f, coil, h, w = sens_maps.shape
+    kernel_size = 7
+    kernel = make_gaussian_kernel(kernel_size, sigma=1)[None, None, ...]
+    kernel = kernel.to(sens_maps.device)
+    sens_maps = sens_maps.view(f * coil, 1, h, w)
+
+    real_smooth = torch.nn.functional.conv2d(
+        sens_maps.real, kernel, padding=kernel_size // 2
+    )
+    imag_smooth = torch.nn.functional.conv2d(
+        sens_maps.imag, kernel, padding=kernel_size // 2
+    )
+
+    sens_maps_smooth = torch.complex(real_smooth, imag_smooth)
+    sens_maps_smooth = sens_maps_smooth.view(f, coil, h, w)
+
+    return sens_maps_smooth
 
 
 def loadmat(filename):
@@ -141,7 +170,6 @@ class ReconDataset(Dataset):
         self,
         root: str,
         mask_path: str,
-        us_mask_type: str,
         single_file_eval: bool = False,
     ) -> None:
         super().__init__()
@@ -152,7 +180,6 @@ class ReconDataset(Dataset):
         else:
             self.files = root
         self.sfe = single_file_eval
-        self.mask_type = us_mask_type
         self.mask_path = mask_path
         self.build()
 
@@ -162,12 +189,10 @@ class ReconDataset(Dataset):
             # [frames, slices, coils, h, w]
             dataset = []
             kspace_data = load_kdata(self.files)
-            # print("DATASET SHAPE:", kspace_data.shape)
-            fname = self.files.split("/")[-1].replace(".mat", "")  # type: ignore
+
             # [frames, h, w]
-            mask_data = loadmat(
-                os.path.join(self.mask_path, fname + "_mask_" + self.mask_type + ".mat")
-            )["mask"]
+            mask_data = loadmat(self.mask_path)["mask"]
+
             self.kdata = kspace_data
             self.mask = mask_data
             self.total_frames = kspace_data.shape[0]
@@ -192,22 +217,52 @@ class ReconDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
+    def get_sense(self, kspace):
+        sense_maps = torch.stack(
+            [
+                torch.from_numpy(
+                    espirit(np.transpose(X, (1, 2, 0))[None, ...], 6, 16, 0.01, 0.5)
+                ).permute(2, 0, 1)
+                for X in kspace
+            ]
+        )
+        return sense_maps
+
     def __getitem__(self, index):
         f0, sl = self.dataset[index]
 
         f1 = (f0 + 1) % self.total_frames
         f2 = (f0 + 2) % self.total_frames
 
-        current_kspace = self.kdata[:, sl]
+        masks = torch.from_numpy(
+            np.stack([self.mask[f0], self.mask[f1], self.mask[f2]])
+        )
 
+        current_kspace = self.kdata[:, sl][f0 : f2 + 1]
+        # print(current_kspace.shape)
+        # [12, C, H, W]
         image_space = torch.from_numpy(current_kspace)
         image_space = ifft(image_space)
-        sense_maps = estimate_sensitivity_maps_smooth(image_space)
-        fused = torch.sum(image_space * sense_maps.conj(), dim=1).numpy()
+        if "radial" in self.files.lower():
+            # print("using radial")
+            sense_maps = self.get_sense(current_kspace)
+        else:
+            # print("using cartesian")
+            sense_maps = estimate_sensitivity_map(
+                current_kspace.T, masks[0].numpy().T
+            ).T
+        sense_maps = smoothen_sense_maps(sense_maps)
+        # sense_maps = sense_maps / torch.linalg.norm(sense_maps)
+        sense_maps = sense_maps / (
+                torch.sum(torch.abs(sense_maps) ** 2, dim=1, keepdim=True).sqrt() + 1e-8
+            )
 
-        frame0 = fused[f0]
-        frame1 = fused[f1]
-        frame2 = fused[f2]
+        fused = torch.mean(image_space * sense_maps.conj(), dim=1) #/ torch.linalg.norm(sense_maps.conj())
+        fused = fused.numpy()
+
+        frame0 = fused[0]
+        frame1 = fused[1]
+        frame2 = fused[2]
 
         frame0, mag0 = normalize_complex(frame0)
         frame1, mag1 = normalize_complex(frame1)
@@ -222,10 +277,6 @@ class ReconDataset(Dataset):
         real2 = np.real(frame2)
         imag2 = np.imag(frame2)
 
-        masks = torch.from_numpy(
-            np.stack([self.mask[f0], self.mask[f1], self.mask[f2]])
-        )
-
         out = np.stack([real0, imag0, real1, imag1, real2, imag2]).astype(np.float32)
         out = torch.from_numpy(out)
         max_val = abs(out).max()
@@ -233,19 +284,20 @@ class ReconDataset(Dataset):
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
         h, w = out.shape[-2:]
         gt_image = out.clone()
+        # np.save('outt.npy', out.cpu().numpy())
         out = interpolate(out.unsqueeze(0), (256, 512), mode="nearest-exact").squeeze()
 
         kspace_output = torch.from_numpy(
             np.stack(
                 [
-                    current_kspace[f0],
-                    current_kspace[f1],
-                    current_kspace[f2],
+                    current_kspace[0],
+                    current_kspace[1],
+                    current_kspace[2],
                 ]
             )
         )
         csm_output = torch.from_numpy(
-            np.stack([sense_maps[f0], sense_maps[f1], sense_maps[f2]])
+            np.stack([sense_maps[0], sense_maps[1], sense_maps[2]])
         )
 
         guidance = {
@@ -256,7 +308,11 @@ class ReconDataset(Dataset):
             "mask": masks,
             "shape": [h, w],
             "gt_image": gt_image,
-            "stds": [mag0, mag1, mag2],
+            "stds": {
+                "std1": torch.tensor(mag0),
+                "std2": torch.tensor(mag1),
+                "std3": torch.tensor(mag2),
+            },
             "max": max_val.item(),
         }
 

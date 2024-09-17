@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List
 from torch.nn import functional as F
 from torchvision import torch
+from fastmri import rss
 
 from torch import fft as tfft
 
@@ -101,6 +102,75 @@ class ReconOperatorSingle(LinearOperator):
         kspace_image = kspace_image * mask
         return kspace_image
 
+    def AI(
+        self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        image_spage: [b, 6, bh, hw] -> Image space data
+                     6 = [r0, i0, r1, i1, r2, i2]
+        mask       : [3, th, tw] -> 3 Frames, target H, target W
+        csm        : [3, 10, ch, cw] -> One sense map per frame, 10 senses total
+        """
+        _, nf, th, tw = mask.shape
+        image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
+        # [b, 6, th, tw]
+        f0 = image_space[:, 0:2]
+        f1 = image_space[:, 2:4]
+        f2 = image_space[:, 4:6]
+        image_space = (
+            torch.stack([f0, f1, f2], dim=1).permute(0, 1, 3, 4, 2).contiguous()
+        )
+        image_space = torch.view_as_complex(image_space)
+        assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
+        # print("IMAGE -> ", image_space.shape)
+        # print("COILS -> ", csms.shape)
+        # print("MASK -> ", mask.shape)
+        image_senes = csms * image_space.unsqueeze(2)
+        kspace_image = fft(image_senes)
+        mask = mask.unsqueeze(2).repeat(1,1,10,1,1)
+        kspace_image = kspace_image * (1-mask)
+        return kspace_image
+
+    def CSM(
+        self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor, ks=False
+    ) -> torch.Tensor:
+        """
+        image_spage: [b, 6, bh, hw] -> Image space data
+                     6 = [r0, i0, r1, i1, r2, i2]
+        mask       : [3, th, tw] -> 3 Frames, target H, target W
+        csm        : [3, 10, ch, cw] -> One sense map per frame, 10 senses total
+        """
+        _, nf, th, tw = mask.shape
+        image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
+        # [b, 6, th, tw]
+        f0 = image_space[:, 0:2]
+        f1 = image_space[:, 2:4]
+        f2 = image_space[:, 4:6]
+        image_space = (
+            torch.stack([f0, f1, f2], dim=1).permute(0, 1, 3, 4, 2).contiguous()
+        )
+        image_space = torch.view_as_complex(image_space)
+        assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
+        # print("IMAGE -> ", image_space.shape)
+        # print("COILS -> ", csms.shape)
+        # print("MASK -> ", mask.shape)
+        image_senes = csms * image_space.unsqueeze(2)
+        if ks:
+            kspace_image = fft(image_senes)
+            return kspace_image
+        # mask = mask.unsqueeze(2).repeat(1,1,10,1,1)
+        # kspace_image = kspace_image * (1-mask)
+        return image_senes
+    
+    def DC(self, image, measure, mask, sense):
+        hw = image.shape[-2:]
+        k_coils = self.CSM(image, mask, sense, ks=True)
+        mask = mask.unsqueeze(2)
+        # print(k_coils.shape, measure.shape)
+        dc_kspace = (1-mask) * k_coils + mask*measure
+        return self.At(dc_kspace, sense, hw)
+
+
     def At(self, kspace_image: torch.Tensor, csm: torch.Tensor, dest_size: List[int]) -> torch.Tensor:
         """
         kspace_image: [b, frames, coils, th, tw] -> K-space data
@@ -110,7 +180,8 @@ class ReconOperatorSingle(LinearOperator):
         
         image_space = ifft(kspace_image)
         # print("IMAGE SPACE -> ", image_space.shape)
-        image_space = torch.sum(image_space * csm.conj(), dim=2)
+        image_space = torch.mean(image_space * csm.conj(), dim=2)
+        # image_space = torch.sum(image_space * csm.conj(), dim=2)/torch.linalg.norm(csm.conj())
         # print("COIL COMB   -> ", image_space.shape)
         f0 = image_space[:, 0]
         f1 = image_space[:, 1]

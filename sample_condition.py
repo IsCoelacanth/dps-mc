@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import partial
 import json
 import os
@@ -15,6 +16,7 @@ from guided_diffusion.unet import create_model
 from guided_diffusion.gaussian_diffusion import create_sampler
 from data.dataloader import get_dataset, get_dataloader
 from util.logger import get_logger
+import hdf5storage
 
 
 def load_yaml(file_path: str) -> dict:
@@ -22,6 +24,18 @@ def load_yaml(file_path: str) -> dict:
         config = yaml.load(f, Loader=yaml.FullLoader)
     return config
 
+def savenumpy2mat(data, np_var, filepath):
+    ''' 
+    np_var: str, the name of the variable in the mat file.
+    data: numpy, array to save.
+    filepath: str, the path to save the mat file.
+    # attention! hdftstorage save the array in a mat file that both h5py and scipy.io.loadmat can read.
+    # but it will transpose the data array.
+    # If you want to save the file in the same way as the original mat file, please first apply np.transpose(data) 
+    '''
+    savedict= {}
+    savedict[np_var] = data
+    hdf5storage.savemat(filepath, savedict)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -41,6 +55,7 @@ def main():
 
     # Device setting
     device_str = f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu"
+    # device_str = 'cpu'
     logger.info(f"Device set to {device_str}.")
     device = torch.device(device_str)
 
@@ -92,97 +107,133 @@ def main():
 
     # Prepare dataloader
     data_config = task_config["data"]
+    data_path = data_config["input"]
+    contrasts = sorted(os.listdir(data_path))
+    print("LOADED CONTRASTS: ", contrasts)
+    sfe_mode = True
+    dest_path = data_config["output"]
 
-    with open(data_config["datapath"], "r") as f:
-        val_files = json.load(f)
-    print(
-        "LOADED CONTRASTS: ", list(val_files.keys())
-    )
-    patterns = data_config["masks"]
-    accelerations = data_config["accs"]
-    base_mask_path = data_config["mask_path"]
-    sfe_mode = data_config["single_file_eval"]
-    destination_dir = data_config['dest_dir']
+    if not os.path.exists(dest_path):
+        os.makedirs(dest_path, exist_ok=True)
 
-    for contrast in val_files:
-        if not os.path.exists(os.path.join(destination_dir, contrast)):
-            os.makedirs(os.path.join(destination_dir, contrast), exist_ok=True)
-        for acc in accelerations:
-            for pattern in patterns:
-                if not os.path.exists(os.path.join(destination_dir, contrast, f"{pattern}_{acc}")):
-                    os.makedirs(os.path.join(destination_dir, contrast, f"{pattern}_{acc}"), exist_ok=True)
-                for file in val_files[contrast][:4]:
-                    # make mask-path for current file:
-                    file_mask = (
-                        base_mask_path.replace("CONTRAST_TYPE", contrast)
-                        + file.split("/")[-2]
-                    )
-                    dataset = get_dataset(
-                        name=data_config["name"],
-                        root=file,
-                        single_file_eval=sfe_mode,
-                        mask_path=file_mask,
-                        us_mask_type=f"{pattern}{acc}",
-                    )
-                    loader = get_dataloader(dataset, batch_size=4, num_workers=0, train=False)
+    for contrast in contrasts:
+        if not os.path.exists(os.path.join(dest_path, contrast)):
+            os.makedirs(os.path.join(dest_path, contrast), exist_ok=True)
+            os.makedirs(os.path.join(dest_path, contrast, 'TestSet'), exist_ok=True)
+            os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2'), exist_ok=True)
 
-                    logger.info(f"Running Inference for file: {(contrast, file.split('/')[-2:])} @ mask = {pattern}, @ acc = {acc} | num-batches: {len(loader)}")
-                    for i, (ref_img, guide) in enumerate(loader):
-                        can_skip = []
-                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
-                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
-                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
-                            can_skip.append(os.path.exists(save_name))
-                        if all(can_skip):
-                            logger.info(f"Skipping batch {i} for file: {file}")
+        try:
+            pids = os.listdir(os.path.join(data_path, contrast, "ValidationSet", "UnderSample_Task2"))
+        except Exception as e:
+            print(f"got {e} for contrast {contrast}, skipping")
+            continue
+        print(f"FOUND {len(pids)} PIDS for {contrast}")
+        for pid in pids:
+            if not os.path.exists(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid)):
+                os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid))
+            files = os.listdir(
+                os.path.join(data_path, contrast, "ValidationSet", "UnderSample_Task2", pid)
+            )
+            for file in sorted(files):
+                filename = os.path.join(
+                    data_path, contrast, "ValidationSet", "UnderSample_Task2", pid, file
+                )
+                mask_name = filename.replace("UnderSample_Task2", "Mask_Task2").replace(
+                    "_kus_", "_mask_"
+                )
+                dataset = get_dataset(
+                    name=data_config["name"],
+                    root=filename,
+                    single_file_eval=True,
+                    mask_path=mask_name,
+                )
+                dataloader = get_dataloader(
+                    dataset, batch_size=3, num_workers=8, train=False
+                )
+                logger.info(f"Running Inference for file: {filename}, {len(dataloader)}")
+                file_result_dict = defaultdict(list)
+                keys_for_result = []
+                for ref_img, guide in dataloader:
+                    ref_img = ref_img.to(device)
+                    for k in guide:
+                        if k in ["shape", "stds", "max"]:
                             continue
-                        ref_img = ref_img.to(device)
-                        for k in guide:
-                            if k in ['shape', 'stds', 'max']:
-                                # print(guide[k])
-                                continue
-                            guide[k] = guide[k].to(device)
+                        guide[k] = guide[k].to(device)
 
-                        y_n = operator.forward(
-                            ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
-                        )
-                        x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
-                        x_start = x_start.clone().detach()
-                        
-                        # create starting seed image
-                        forw = forward_fn(x_start=x_start)
+                    y_n = operator.forward(
+                        ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
+                    )
+                    x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
+                    x_start = x_start.clone().detach()
+                    forw = forward_fn(x_start=x_start)
 
-                        # MRI Recon
-                        sample = sample_fn(
-                            x_start=forw,
-                            measurement=y_n,
-                            record=False,
-                            save_root=out_path,
-                            guidance=guide,
-                        )
-                        ih, iw = guide['shape']
-                        ih = ih[0].item()
-                        iw = iw[0].item()
-                        sample = interpolate(sample, size=(ih, iw), mode='nearest-exact')
-                        gt_image = guide['gt_image']
+                    # MRI Recon
+                    sample = sample_fn(
+                        x_start=forw,
+                        measurement=y_n,
+                        record=False,
+                        save_root=out_path,
+                        guidance=guide,
+                    )
+                    ih, iw = guide["shape"]
+                    ih = ih[0].item()
+                    iw = iw[0].item()
+                    sample = interpolate(sample, size=(ih, iw), mode="nearest-exact")
+                    gt_image = guide["gt_image"]
 
-                        # 
-                        # exit()
-                        i = 0
-                        for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
-                            save_name = '_'.join(file.split('/')[-2:]) + f"__{sl}__{fr}.npy"
-                            save_name = os.path.join(destination_dir, contrast, f"{pattern}_{acc}", save_name)
-                            np.save(
-                                save_name,
+                    i = 0
+                    for sl, fr in zip(guide["slice_no"], guide["frame_no"]):
+                        if sl not in keys_for_result:
+                            keys_for_result.append(sl.item())
+                        file_result_dict[sl.item()].append(
+                            (
+                                fr.item(),
                                 {
                                     "gt": gt_image[i].squeeze().detach().cpu().numpy(),
                                     "pr": sample[i].detach().squeeze().cpu().numpy(),
                                     "in": x_start[i].detach().squeeze().cpu().numpy(),
-                                    'stds': guide['stds'][i],
-                                    'max': guide['max'][i]
+                                    "stds": guide["stds"],
+                                    "max": guide["max"],
+                                    "csm": guide["sense_maps"][i]
+                                    .detach()
+                                    .cpu()
+                                    .squeeze()
+                                    .numpy(),
+                                    "ksp": guide["kspace"][i]
+                                    .detach()
+                                    .cpu()
+                                    .squeeze()
+                                    .numpy(),
+                                    "mask": guide["mask"][i]
+                                    .detach()
+                                    .cpu()
+                                    .squeeze()
+                                    .numpy(),
                                 },
-                                allow_pickle=True,
                             )
+                        )
+                slices = []
+                for s in keys_for_result:
+                    frames_s = file_result_dict[s]
+                    frames_pr = []
+                    for frameid, frames in frames_s:
+                        pr = frames['pr']
+                        mx = frames['max'][0].item()
+                        std = frames['stds']['std1'][0].item()
+                        f = pr[0] + 1j*pr[1]
+                        f = (f * mx) * std
+                        frames_pr.append(f) # [h, w]
+                    slices.append(np.array(frames_pr))
+                slices = np.array(slices)
+                slices = np.transpose(slices, (1,0,2,3)).T
+
+                # dest_name = filename.replace(data_path, dest_path).replace('UnderSample_Task2', "Task2")
+                dest_name = os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid, file)
+                print(dest_path)
+                savenumpy2mat(slices, 'img4ranking', dest_name)
+
+                np.save('result.npy', file_result_dict, allow_pickle=True)
+                exit()
 
 
 if __name__ == "__main__":

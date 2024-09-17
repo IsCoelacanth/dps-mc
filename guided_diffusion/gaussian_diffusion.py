@@ -45,7 +45,7 @@ def create_sampler(sampler,
         timestep_respacing = [steps]
 
     if forward:
-        timestep_respacing = "50" 
+        timestep_respacing = "25" 
     return sampler(use_timesteps=space_timesteps(steps, timestep_respacing),
                    betas=betas,
                    model_mean_type=model_mean_type,
@@ -173,14 +173,14 @@ class GaussianDiffusion:
     def q_sample_loop(self, model, x_start):
         img = x_start
         device = x_start.device
-        pbar = tqdm(list(range(self.num_timesteps//2-1)), desc="Running Forward Diffusion")
+        pbar = tqdm(list(range(self.num_timesteps-1)), desc="Running Forward Diffusion")
         for idx in pbar:
             time = torch.tensor([idx]*img.shape[0], device=device)
             out = self.q_sample_ddim(model, img, time)
             img = out['sample']
         return img
 
-    # @torch.no_grad()
+    @torch.no_grad()
     def p_sample_loop(self,
                       model,
                       x_start,
@@ -215,8 +215,8 @@ class GaussianDiffusion:
             #                           x_0_hat=out['pred_xstart'])
             img = out['sample']
             img = img.detach_()
-            if idx % 2 == 0:
-                np.save(f'pred_{idx}.npy', out['pred_xstart'].detach().cpu().numpy())
+            # if idx % 2 == 0:
+            #     np.save(f'pred_{idx}.npy', out['pred_xstart'].detach().cpu().numpy())
             distance = torch.linalg.norm(measurement - operator.A(img, guidance['mask'], guidance['sense_maps']))
             pbar.set_postfix({'distance': round(distance.item(), 4), 'err_delta': round(delta.item(), 4)}, refresh=False)
             if record:
@@ -425,11 +425,56 @@ def frequency_decomposed_backproject(x_estimate, y, operator, mask, csm):
     y_low_freq = y * freq_mask
     y_high_freq = y * (1-freq_mask)
 
-    loss = ((x_low_freq - y_low_freq) * 0.4 + 0.6*(x_high_freq - y_high_freq))
+    loss = ((x_low_freq - y_low_freq) *2 + 4*(x_high_freq - y_high_freq))
 
     error = operator.At(loss, csm, [h, w])
 
     return error, loss
+
+
+def ATA(x_0_pred, op, guide, h, w):
+    return op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']), guide['sense_maps'], [h, w])
+
+def CG(opr, guide, hw, measurement, x, n_inner=20, eps=1e-8):
+    r = measurement - ATA(x, opr, guide, *hw)
+    p = r.clone()
+    rs_old = torch.matmul(r.view(1, -1), r.view(1, -1).T)
+    for _ in range(n_inner):
+        Ap = ATA(p, opr, guide, *hw)
+        a = rs_old / torch.matmul(p.view(1, -1), Ap.view(1, -1).T)
+
+        x += a * p
+        r -= a * Ap
+
+        rs_new = torch.matmul(r.view(1, -1), r.view(1, -1).T)
+        
+        if torch.sqrt(rs_new) < eps:
+            break
+        p = r + (rs_new / rs_old) * p
+        rs_old = rs_new
+    return x
+
+def FISTA(opr, guide, hw, measurement, x_t,  M=2):
+    l_init = torch.randn_like(x_t)
+    for _ in range(20):
+        _x = ATA(l_init, opr, guide, *hw)
+        l_init = _x / torch.norm(_x)
+    L = torch.sqrt(torch.sum(torch.abs(opr.A(l_init, guide['mask'], guide['sense_maps']))**2) / torch.sum(torch.abs(l_init)**2))
+    # print("L: ", L)
+    x = x_t.clone()
+    z = x
+    t = torch.tensor(1.0)
+    for itr in range(M):
+        x_prev = x
+        grad = opr.At(opr.A(z, guide['mask'], guide['sense_maps']) - measurement, guide['sense_maps'], hw)
+        x = z - grad / L
+        if (torch.norm(x-x_prev) / torch.norm(x_prev)) < 1e-6 and itr > 10:
+            # print("\n\nConverged: ", itr)
+            break
+        t_n = (1 + torch.sqrt(1 + 4 * t**2)) / 2
+        z = x + ((t - 1) / t_n) * (x - x_prev)
+        t = t_n
+    return x
 
 @register_sampler(name='ddim')
 class DDIM(SpacedDiffusion):
@@ -486,6 +531,7 @@ class DDIM(SpacedDiffusion):
         x_0_pred = torch.clamp(x_0_pred, -1, 1)
         h, w = x.shape[-2:]
         # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
+        # err_delta = torch.tensor(0.4)
         back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
         err_norm = torch.linalg.norm(loss)
         if hasattr(self, 'prev_err_norm'):
@@ -496,15 +542,18 @@ class DDIM(SpacedDiffusion):
             err_eta = base_eta
             self.prev_err_norm = err_norm
             err_delta = torch.zeros(1, device=x.device)
-        x_0_pred = x_0_pred -  back_projection_err * err_eta
+        x_0_pred = x_0_pred -  back_projection_err/torch.linalg.norm(back_projection_err) * err_eta
+        # print(torch.linalg.norm(back_projection_err).mean().item())
 
         # Step 4: Apply low-rank regularization (simplified)
         U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
         S = torch.clamp(S - 0.1, min=0)  # Soft thresholding
         x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
 
-
+        
         out['pred_xstart'] = x_0_pred
+        # if t.squeeze()[0].item() % 10 == 0:
+        #     np.save(f"pred_{t.squeeze()[0].item()}.npy", x_0_pred.cpu().numpy())
         # Equation 12.
         noise = torch.randn_like(x)
         mean_pred = (
