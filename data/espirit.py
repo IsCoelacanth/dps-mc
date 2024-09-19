@@ -789,7 +789,7 @@ def estimate_sensitivity_map(k_space: np.ndarray, mask: np.ndarray, is_radial: b
     :return: Sensitivity map of shape (kx, ky, nc, nb) complex.
     """
     # print("KSPACE", k_space.shape)
-    device = 'cpu'
+    device = f"cuda" if torch.cuda.is_available() else "cpu"
     # device = 'cuda'
     k_space = np.transpose(k_space, (3, 2, 0, 1))
     Uacs = get_acs_mask(mask, half_bandwidth=8, is_radial=is_radial)

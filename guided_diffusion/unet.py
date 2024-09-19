@@ -86,6 +86,7 @@ def create_model(
 
     try:
         model.load_state_dict(th.load(model_path, map_location='cpu'))
+        print("LOADED MODEL WEIGHTS")
     except Exception as e:
         print(f"Got exception: {e} / Randomly initialize")
     return model

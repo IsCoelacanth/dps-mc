@@ -24,8 +24,8 @@ data:
   single_file_eval: true
   dest_dir: /bigdata/CMRxRecon2024/ChallengeVal/
   # dest_dir: /bigdata/CMRxRecon2024/ChallengeTest/
-  input: /bigdata/CMRxRecon2024/ChallengeData/MultiCoil/
-  output: ./testres
+  input: /input
+  output: /output
 
 measurement:
   operator:

@@ -25,8 +25,9 @@ def espirit(X: torch.Tensor, k, r, t, c):
       maps: This is the ESPIRiT operator. It will have dimensions (sx, sy, sz, nc, nc) with (sx, sy, sz, :, idx)
             being the idx'th set of ESPIRiT maps.
     """
+    device = f"cuda" if torch.cuda.is_available() else "cpu"
     if isinstance(X, np.ndarray):
-        X = torch.from_numpy(X).to('cuda:4')
+        X = torch.from_numpy(X).to(device)
     device = X.device
     # print(device)
     sx = X.shape[0]

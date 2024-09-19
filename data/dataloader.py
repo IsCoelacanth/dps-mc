@@ -197,15 +197,16 @@ class ReconDataset(Dataset):
             self.mask = mask_data
             self.total_frames = kspace_data.shape[0]
             ns = kspace_data.shape[1]
-            ns1 = ns // 2 - 1
-            ns2 = ns // 2
-            slice_list = [ns1, ns2]
+            # ns1 = ns // 2 - 1
+            # ns2 = ns // 2
+            # slice_list = [ns1, ns2]
+            slice_list = list(range(ns))
             if ns == 1:
                 ns1 = 0
                 ns2 = 0
                 slice_list = [0]
 
-            jsize = kspace_data.shape[0] if "mapping" in self.files.lower() else 3
+            jsize = kspace_data.shape[0] # if "mapping" in self.files.lower() else 3
             for i in slice_list:
                 # for j in range(jsize):
                 for j in range(jsize):
@@ -238,7 +239,8 @@ class ReconDataset(Dataset):
             np.stack([self.mask[f0], self.mask[f1], self.mask[f2]])
         )
 
-        current_kspace = self.kdata[:, sl][f0 : f2 + 1]
+        current_kspace = self.kdata[:, sl]#[f0 : f2 + 1]
+        current_kspace = np.stack([current_kspace[f0], current_kspace[f1], current_kspace[f2]])
         # print(current_kspace.shape)
         # [12, C, H, W]
         image_space = torch.from_numpy(current_kspace)

@@ -18,6 +18,11 @@ from data.dataloader import get_dataset, get_dataloader
 from util.logger import get_logger
 import hdf5storage
 
+from torch.multiprocessing import Pool, Process, set_start_method
+try:
+     set_start_method('spawn')
+except RuntimeError:
+    pass
 
 def load_yaml(file_path: str) -> dict:
     with open(file_path) as f:
@@ -123,7 +128,7 @@ def main():
             os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2'), exist_ok=True)
 
         try:
-            pids = os.listdir(os.path.join(data_path, contrast, "ValidationSet", "UnderSample_Task2"))
+            pids = os.listdir(os.path.join(data_path, contrast, "TestSet", "UnderSample_Task2"))
         except Exception as e:
             print(f"got {e} for contrast {contrast}, skipping")
             continue
@@ -132,11 +137,11 @@ def main():
             if not os.path.exists(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid)):
                 os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid))
             files = os.listdir(
-                os.path.join(data_path, contrast, "ValidationSet", "UnderSample_Task2", pid)
+                os.path.join(data_path, contrast, "TestSet", "UnderSample_Task2", pid)
             )
             for file in sorted(files):
                 filename = os.path.join(
-                    data_path, contrast, "ValidationSet", "UnderSample_Task2", pid, file
+                    data_path, contrast, "TestSet", "UnderSample_Task2", pid, file
                 )
                 mask_name = filename.replace("UnderSample_Task2", "Mask_Task2").replace(
                     "_kus_", "_mask_"
@@ -148,7 +153,7 @@ def main():
                     mask_path=mask_name,
                 )
                 dataloader = get_dataloader(
-                    dataset, batch_size=3, num_workers=8, train=False
+                    dataset, batch_size=6, num_workers=0, train=False
                 )
                 logger.info(f"Running Inference for file: {filename}, {len(dataloader)}")
                 file_result_dict = defaultdict(list)
@@ -212,6 +217,7 @@ def main():
                                 },
                             )
                         )
+                        i += 1
                 slices = []
                 for s in keys_for_result:
                     frames_s = file_result_dict[s]
@@ -220,9 +226,10 @@ def main():
                         pr = frames['pr']
                         mx = frames['max'][0].item()
                         std = frames['stds']['std1'][0].item()
+                        pr = pr * mx
                         f = pr[0] + 1j*pr[1]
-                        f = (f * mx) * std
-                        frames_pr.append(f) # [h, w]
+                        f = f * std
+                        frames_pr.append(np.abs(f)) # [h, w]
                     slices.append(np.array(frames_pr))
                 slices = np.array(slices)
                 slices = np.transpose(slices, (1,0,2,3)).T
@@ -232,8 +239,8 @@ def main():
                 print(dest_path)
                 savenumpy2mat(slices, 'img4ranking', dest_name)
 
-                np.save('result.npy', file_result_dict, allow_pickle=True)
-                exit()
+                # np.save('result.npy', file_result_dict, allow_pickle=True)
+                # exit()
 
 
 if __name__ == "__main__":
