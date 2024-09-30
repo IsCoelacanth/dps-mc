@@ -59,7 +59,7 @@ def main():
     logger = get_logger()
 
     # Device setting
-    device_str = f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu"
+    device_str = f"cuda" if torch.cuda.is_available() else "cpu"
     # device_str = 'cpu'
     logger.info(f"Device set to {device_str}.")
     device = torch.device(device_str)
@@ -125,25 +125,25 @@ def main():
         if not os.path.exists(os.path.join(dest_path, contrast)):
             os.makedirs(os.path.join(dest_path, contrast), exist_ok=True)
             os.makedirs(os.path.join(dest_path, contrast, 'TestSet'), exist_ok=True)
-            os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2'), exist_ok=True)
+            os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task1'), exist_ok=True)
 
         try:
-            pids = os.listdir(os.path.join(data_path, contrast, "TestSet", "UnderSample_Task2"))
+            pids = os.listdir(os.path.join(data_path, contrast, "TestSet", "UnderSample_Task1"))
         except Exception as e:
             print(f"got {e} for contrast {contrast}, skipping")
             continue
         print(f"FOUND {len(pids)} PIDS for {contrast}")
         for pid in pids:
-            if not os.path.exists(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid)):
-                os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid))
+            if not os.path.exists(os.path.join(dest_path, contrast, 'TestSet', 'Task1', pid)):
+                os.makedirs(os.path.join(dest_path, contrast, 'TestSet', 'Task1', pid))
             files = os.listdir(
-                os.path.join(data_path, contrast, "TestSet", "UnderSample_Task2", pid)
+                os.path.join(data_path, contrast, "TestSet", "UnderSample_Task1", pid)
             )
             for file in sorted(files):
                 filename = os.path.join(
-                    data_path, contrast, "TestSet", "UnderSample_Task2", pid, file
+                    data_path, contrast, "TestSet", "UnderSample_Task1", pid, file
                 )
-                mask_name = filename.replace("UnderSample_Task2", "Mask_Task2").replace(
+                mask_name = filename.replace("UnderSample_Task1", "Mask_Task1").replace(
                     "_kus_", "_mask_"
                 )
                 dataset = get_dataset(
@@ -234,8 +234,8 @@ def main():
                 slices = np.array(slices)
                 slices = np.transpose(slices, (1,0,2,3)).T
 
-                # dest_name = filename.replace(data_path, dest_path).replace('UnderSample_Task2', "Task2")
-                dest_name = os.path.join(dest_path, contrast, 'TestSet', 'Task2', pid, file)
+                # dest_name = filename.replace(data_path, dest_path).replace('UnderSample_Task1', "Task1")
+                dest_name = os.path.join(dest_path, contrast, 'TestSet', 'Task1', pid, file)
                 print(dest_path)
                 savenumpy2mat(slices, 'img4ranking', dest_name)
 
