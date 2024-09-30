@@ -173,7 +173,7 @@ class GaussianDiffusion:
     def q_sample_loop(self, model, x_start):
         img = x_start
         device = x_start.device
-        pbar = tqdm(list(range(self.num_timesteps//2-1)), desc="Running Forward Diffusion")
+        pbar = tqdm(list(range(self.num_timesteps-1)), desc="Running Forward Diffusion")
         for idx in pbar:
             time = torch.tensor([idx]*img.shape[0], device=device)
             out = self.q_sample_ddim(model, img, time)
@@ -223,7 +223,7 @@ class GaussianDiffusion:
                 if idx % 10 == 0:
                     file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
                     plt.imsave(file_path, clear_color(img))
-
+        img = operator.DC(img, measurement, guidance['mask'], guidance['sense_maps'])
         return img       
         
     def p_sample(self, model, x, t, operator):
@@ -538,7 +538,7 @@ class DDIM(SpacedDiffusion):
         # DDNM :
         # x_0_pred = x_0_pred - op.At(op.A(x_0_pred, guide['mask'], guide['sense_maps']) - y, guide['sense_maps'], [h, w])
         err_delta = torch.tensor(1)
-        ee = torch.randn_like(x_0_pred) * sigma_b**0.5 / 8
+        # ee = torch.randn_like(x_0_pred) * sigma_b**0.5 / 8
 
         # OURS SPA:
         back_projection_err, loss = frequency_decomposed_backproject(x_0_pred, y, op, guide['mask'], guide['sense_maps'])
@@ -551,7 +551,7 @@ class DDIM(SpacedDiffusion):
             err_eta = base_eta
             self.prev_err_norm = err_norm
             err_delta = torch.zeros(1, device=x.device)
-        x_0_pred = x_0_pred - (back_projection_err * err_eta) / torch.linalg.norm(back_projection_err) + ee
+        x_0_pred = x_0_pred - (back_projection_err * err_eta) / torch.linalg.norm(back_projection_err)
 
         # Step 4: Apply low-rank regularization (simplified)
         U, S, V = torch.svd(x_0_pred.view(x_0_pred.size(0), -1))
@@ -559,7 +559,7 @@ class DDIM(SpacedDiffusion):
         x_0_pred = torch.matmul(U, torch.matmul(torch.diag(S), V.T)).view_as(x_0_pred)
 
         # OURS DM_FAST = SPA + FISTA
-        x_0_pred = FISTA(op, guide, [h,w], y, x_0_pred)
+        # x_0_pred = FISTA(op, guide, [h,w], y, x_0_pred, M=100)
 
         # DDS:
         # x_0_pred = CG(op, guide, [h,w],  ee+op.At(y, guide['sense_maps'], [h, w]), x_0_pred)

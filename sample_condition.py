@@ -136,6 +136,7 @@ def main():
                         y_n = operator.forward(
                             ref_img, mask=guide["mask"], sense_maps=guide["sense_maps"]
                         )
+                        np.save('yn.npy', y_n.detach().cpu().numpy())
                         x_start = operator.At(y_n, guide["sense_maps"], ref_img.shape[-2:])
                         x_start = x_start.clone().detach()
                         
@@ -160,6 +161,7 @@ def main():
                         # 
                         # exit()
                         i = 0
+                        x_start = interpolate(x_start, size=(ih, iw), mode='nearest-exact')
                         for name in guide['name']:
                             save_name = os.path.join(destination_dir, contrast, f"acc{acc}", f"{ct}_{name}")
                             np.save(
@@ -168,9 +170,13 @@ def main():
                                     'in': x_start[i].squeeze().detach().cpu().numpy(),
                                     "gt": gt_image[i].squeeze().detach().cpu().numpy(),
                                     "pr": sample[i].detach().squeeze().cpu().numpy(),
+                                    "cs": guide['sense_maps'][i].squeeze().detach().cpu().numpy(),
                                 },
                                 allow_pickle=True,
                             )
+                            i += 1
+
+                        exit()
 
 
 if __name__ == "__main__":

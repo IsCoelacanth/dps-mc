@@ -11,6 +11,7 @@ import torch
 from torch import fft as tfft
 from torch.nn.functional import interpolate
 from functools import lru_cache
+from .espirit import estimate_sensitivity_map as sense
 
 __DATASET__ = {}
 
@@ -49,6 +50,12 @@ def normalize_complex(data, eps=1e-8):
 def ifft(x: torch.Tensor) -> torch.Tensor:
     x = tfft.ifftshift(x, dim=[-2, -1])
     x = tfft.ifft2(x, dim=[-2, -1], norm="ortho")
+    x = tfft.fftshift(x, dim=[-2, -1])
+    return x
+
+def fft(x: torch.Tensor) -> torch.Tensor:
+    x = tfft.ifftshift(x, dim=[-2, -1])
+    x = tfft.fft2(x, dim=[-2, -1], norm="ortho")
     x = tfft.fftshift(x, dim=[-2, -1])
     return x
 
@@ -192,18 +199,27 @@ class ReconDataset(Dataset):
         f1_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_1), self.ext]))
         f2_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_2), self.ext]))
         f3_path = os.path.join(self.path, '_'.join([self.f_id, self.cont, str(_3), self.ext]))
+        masks = torch.from_numpy(self.mask)
 
         # multi-coil images 10 x h x w
         frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['complex-image-space'])
-        csm_frame0 = estimate_sensitivity_maps_smooth(frame0.unsqueeze(0)).squeeze()
+        # csm_frame0 = estimate_sensitivity_maps_smooth(frame0.unsqueeze(0)).squeeze()
+        frame0_kspace = fft(frame0.unsqueeze(0))
+        csm_frame0 = sense(frame0_kspace.numpy().T, masks.numpy().T).T.squeeze() 
         frame0 = torch.sum(frame0 * csm_frame0.conj(), dim=0).numpy()
-        frame1 = torch.from_numpy(np.load(f2_path, allow_pickle=True)[()]['complex-image-space'])
-        csm_frame1 = estimate_sensitivity_maps_smooth(frame1.unsqueeze(0)).squeeze()
-        frame1 = torch.sum(frame1 * csm_frame1.conj(), dim=0).numpy()
-        frame2 = torch.from_numpy(np.load(f3_path, allow_pickle=True)[()]['complex-image-space'])
-        csm_frame2 = estimate_sensitivity_maps_smooth(frame2.unsqueeze(0)).squeeze()
-        frame2 = torch.sum(frame2 * csm_frame2.conj(), dim=0).numpy()
 
+        frame1 = torch.from_numpy(np.load(f2_path, allow_pickle=True)[()]['complex-image-space'])
+        # csm_frame1 = estimate_sensitivity_maps_smooth(frame1.unsqueeze(0)).squeeze()
+        frame1_kspace = fft(frame1.unsqueeze(0))
+        csm_frame1 = sense(frame1_kspace.numpy().T, masks.numpy().T).T.squeeze()
+        frame1 = torch.sum(frame1 * csm_frame1.conj(), dim=0).numpy()
+
+        frame2 = torch.from_numpy(np.load(f3_path, allow_pickle=True)[()]['complex-image-space'])
+        # csm_frame2 = estimate_sensitivity_maps_smooth(frame2.unsqueeze(0)).squeeze()
+        frame2_kspace = fft(frame2.unsqueeze(0))
+        csm_frame2 = sense(frame2_kspace.numpy().T, masks.numpy().T).T.squeeze()
+        frame2 = torch.sum(frame2 * csm_frame2.conj(), dim=0).numpy()
+        # print(frame0.shape, frame1.shape, frame2.shape)
         # multi-coil images 10 x h x w
         # frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['complex-image-space'])
         # csm_frame0 = torch.from_numpy(np.load(f1_path, allow_pickle=True)[()]['csm-4x'])
@@ -229,7 +245,6 @@ class ReconDataset(Dataset):
         real2 = np.real(frame2)
         imag2 = np.imag(frame2)
 
-        masks = torch.from_numpy(self.mask)
         masks = torch.stack([masks, masks, masks])
 
         out = np.stack([real0, imag0, real1, imag1, real2, imag2]).astype(np.float32)
@@ -239,6 +254,19 @@ class ReconDataset(Dataset):
         # out = resize(out, (320, 320), antialias=True, interpolation=0)
         h, w = out.shape[-2:]
         gt_image = out.clone()
+        
+        out = out.permute(1, 2, 0).reshape(h, w, 3, 2).contiguous()
+        out = torch.view_as_complex(out)
+        out = out.permute(2, 0, 1)
+        out = fft(out)
+        out = out * masks
+        out = ifft(out)
+        print(out.shape)
+        out = out.permute(1, 2, 0).contiguous()
+        out = torch.view_as_real(out)
+        out = out.permute(2,3,0,1).contiguous()
+        out = out.reshape(6, h, w)
+        
         out = interpolate(out.unsqueeze(0), (160, 512), mode="nearest-exact").squeeze()
 
         csm_output = torch.from_numpy(np.stack([csm_frame0, csm_frame1, csm_frame2]))

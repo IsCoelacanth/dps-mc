@@ -124,6 +124,46 @@ class ReconOperatorSingle(LinearOperator):
         )
         image_space = F.interpolate(image_space, tuple(dest_size), mode='nearest-exact')
         return image_space.float()
+    
+    def CSM(
+        self, image_space: torch.Tensor, mask: torch.Tensor, csms: torch.Tensor, ks=False
+    ) -> torch.Tensor:
+        """
+        image_spage: [b, 6, bh, hw] -> Image space data
+                     6 = [r0, i0, r1, i1, r2, i2]
+        mask       : [3, th, tw] -> 3 Frames, target H, target W
+        csm        : [3, 10, ch, cw] -> One sense map per frame, 10 senses total
+        """
+        _, nf, th, tw = mask.shape
+        image_space = F.interpolate(image_space, size=(th, tw), mode="nearest-exact")
+        # [b, 6, th, tw]
+        f0 = image_space[:, 0:2]
+        f1 = image_space[:, 2:4]
+        f2 = image_space[:, 4:6]
+        image_space = (
+            torch.stack([f0, f1, f2], dim=1).permute(0, 1, 3, 4, 2).contiguous()
+        )
+        image_space = torch.view_as_complex(image_space)
+        assert image_space.shape[1] == nf, "Cannot recover all frames correctly"
+        # print("IMAGE -> ", image_space.shape)
+        # print("COILS -> ", csms.shape)
+        # print("MASK -> ", mask.shape)
+        image_senes = csms * image_space.unsqueeze(2)
+        if ks:
+            kspace_image = fft(image_senes)
+            return kspace_image
+        # mask = mask.unsqueeze(2).repeat(1,1,10,1,1)
+        # kspace_image = kspace_image * (1-mask)
+        return image_senes
+    
+    def DC(self, image, measure, mask, sense):
+        print(image.shape, measure.shape, mask.shape, sense.shape)
+        hw = image.shape[-2:]
+        k_coils = self.CSM(image, mask, sense, ks=True)
+        mask = mask.unsqueeze(2)
+        # print(k_coils.shape, measure.shape)
+        dc_kspace = (1-mask) * k_coils + mask*measure
+        return self.At(dc_kspace, sense, hw)
 
 
 # =============
